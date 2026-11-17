@@ -322,6 +322,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(self.server.service.with_usage('questions', store.question(parts[2])))
             if route.path == '/api/query' and method == 'POST':
                 return self.send(self.server.service.query(self.body()))
+            if route.path == '/api/queries/unreadable' and method == 'GET':
+                return self.send(store.unreadable_queries())
             if route.path == '/api/queries' and method == 'GET':
                 return self.send(store.queries())
             self.send({'error': '경로를 찾을 수 없습니다.'}, 404)

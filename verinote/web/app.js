@@ -475,8 +475,9 @@ function renderQuery(r) {
   $('#download-query').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-query.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 }
 async function loadQueries() {
-  const rows=await api('/api/queries');
+  const rows=await api('/api/queries'),unreadable=(await api('/api/queries/unreadable')).count;
   $('#query-history').innerHTML=rows.map(r=>`<div class="history-line"><button data-replay="${esc(r.id)}">과거 스냅샷 재조회</button> ${esc(r.payload.query.action)} · ${esc(r.payload.query.subject||'전체')} · ${esc(date(r.created_at))}</div>`).join('')||'<p>아직 실행한 질의가 없습니다.</p>';
+  if(unreadable)$('#query-history').insertAdjacentHTML('beforeend',`<p class="muted">읽을 수 없는 조회 기록 ${unreadable}개는 목록에 표시하지 않습니다. 문서를 삭제하면 지우지 않고 수를 알립니다.</p>`);
   for(const button of document.querySelectorAll('[data-replay]'))button.onclick=()=>attempt(async()=>{const r=rows.find(r=>r.id===button.dataset.replay).payload;renderQuery(await api('/api/query','POST',{...r.query,snapshot:r.snapshot}));});
 }
 async function loadRuns() {
@@ -982,7 +983,7 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
     for(const selector of ['#document-detail','#query-result','#answer-result','#runs'])$(selector).innerHTML='';
     await loadLibrary();await loadQueries();await loadQuestions();await loadUnreadableQuestions();await loadCleanup();
     if(result.current_version)await openDoc(doc.id,result.current_version);
-    notice(deleteNotice(result,latestOnly),Boolean(result.cleanup_pending||result.unlocated_run_logs));
+    notice(deleteNotice(result,latestOnly),Boolean(result.cleanup_pending||result.unlocated_run_logs||result.unreadable_snapshots_kept||result.unreadable_queries_kept||result.questions_kept_with_snapshot||result.queries_kept_with_snapshot));
   }catch(error){
     if(error.status===409){$('#delete-dialog').close();await loadLibrary();await openDoc(doc.id);notice(error.message+' 삭제하려면 다시 선택하세요.',true);}
     else{$('#delete-error').textContent=error.message;$('#confirm-delete').disabled=false;}
@@ -990,7 +991,10 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
 });
 function deleteNotice(result,latestOnly){
   const done=result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.');
-  return done+(result.unlocated_run_logs?` 읽을 수 없는 ID의 실행 로그 ${result.unlocated_run_logs}개는 폴더를 알 수 없어 정리했는지 확인하지 못했습니다.`:'')+(result.unreadable_questions_kept?` 손상된 질문 기록 ${result.unreadable_questions_kept}개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
+  return done+(result.unlocated_run_logs?` 읽을 수 없는 ID의 실행 로그 ${result.unlocated_run_logs}개는 폴더를 알 수 없어 정리했는지 확인하지 못했습니다.`:'')+(result.unreadable_questions_kept?` 손상된 질문 기록 ${result.unreadable_questions_kept}개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'')
+    +(result.unreadable_snapshots_kept?` 읽을 수 없는 스냅샷 ${result.unreadable_snapshots_kept}개는 삭제한 문서의 내용을 담았는지 알 수 없어 지우지 않았습니다.`:'')
+    +(result.unreadable_queries_kept?` 읽을 수 없는 조회 기록 ${result.unreadable_queries_kept}개는 어느 스냅샷의 것인지 알 수 없어 지우지 않았습니다.`:'')
+    +(result.questions_kept_with_snapshot||result.queries_kept_with_snapshot?` 지우지 않은 스냅샷을 가리키는 질문 ${result.questions_kept_with_snapshot||0}개와 조회 기록 ${result.queries_kept_with_snapshot||0}개도 남았습니다.`:'');
 }
 function renderUnreadableQuestions(list){
   const ids=list.ids||[],hidden=list.hidden||0;
