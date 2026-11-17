@@ -99,7 +99,9 @@ class MCPWorkflow:
     def list_runs(self, document_id):
         identifier(document_id)
         with self.store.connect() as db:
-            rows = db.execute('SELECT r.* FROM runs r JOIN external_sessions e ON e.run_id=r.id WHERE document_id=? ORDER BY created_at DESC,id DESC LIMIT 50', (document_id,)).fetchall()
+            from .store import readable_runs, run_columns
+            found = db.execute(f'SELECT {run_columns(db, "r")} FROM runs r JOIN external_sessions e ON e.run_id=r.id WHERE r.document_id=? ORDER BY r.created_at DESC,r.rowid DESC', (document_id,))
+            rows = readable_runs(found)[0][:50]
             return [self._status(db, self.store.unpack_run(row)) for row in rows]
 
     def start(self, document_id, stage, expected_version, expected_generation, client_label='desktop'):

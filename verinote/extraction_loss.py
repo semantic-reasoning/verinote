@@ -178,7 +178,12 @@ class RecoveryBudget:
         self.attempts = set()
         self.unknown = False
         with store.connect() as db:
-            rows = db.execute("SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND id<>?", (run['document_id'],run['version'],run['agent'],run['model'],run['id'])).fetchall()
+            from .store import readable_runs, run_columns
+            found = db.execute(f"SELECT {run_columns(db)} FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract'", (run['document_id'],run['version'],run['agent'],run['model'])).fetchall()
+        rows, hidden = readable_runs(found)
+        rows = [r for r in rows if r['id'] != run['id']]
+        # A predecessor whose id is unreadable cannot have its attempts read, so the budget it spent is unknown rather than zero.
+        if hidden: self.unknown = True
         for row in rows:
             prior = store.unpack_run(row)
             # Budget ancestry and checkpoint reuse must agree even when only HTTP timeouts change.

@@ -74,6 +74,9 @@ QUESTION_STATUSES = ('queued', 'running', 'success', 'error', 'interrupted', 'ca
 QUESTION_TEXT_FIELDS = ('id', 'question', 'agent', 'model', 'snapshot', 'created_at')
 
 
+UNREADABLE_RUN_ID = '(읽을 수 없는 ID)'
+
+
 def row_key(kind, stored):
     """A question row's id given typeof(id) and CAST(id AS BLOB): the id as text when it is stored as text that is strict UTF-8, else None
     (an id stored as a BLOB or NULL, or text that is not UTF-8). Never raises, so a scan that reads the id this way cannot fail on it."""
@@ -83,6 +86,34 @@ def row_key(kind, stored):
         return bytes(stored).decode('utf-8')
     except UnicodeDecodeError:
         return None
+
+
+def run_columns(db, alias=''):
+    """The runs columns for a SELECT that never reads the id as text: the id comes back as id_type (typeof) and id_raw (CAST AS BLOB), so a
+    BLOB, NULL or non-UTF-8 id cannot make the read raise or return bytes. Rows are decoded with decode_run or readable_runs."""
+    prefix = f'{alias}.' if alias else ''
+    cols = [f'{prefix}"{r[1]}"' for r in db.execute('PRAGMA table_info(runs)') if r[1] != 'id']
+    return f'{prefix}rowid AS rowid_,typeof({prefix}id) AS id_type,CAST({prefix}id AS BLOB) AS id_raw,' + ','.join(cols)
+
+
+def decode_run(row):
+    """A row selected with run_columns as a dict whose id is the id as strict UTF-8 text, or None when the id is stored any other way."""
+    value = dict(row)
+    key = row_key(value.pop('id_type'), value.pop('id_raw'))
+    value.pop('rowid_', None)
+    return None if key is None else {'id': key} | value
+
+
+def readable_runs(rows):
+    """Splits rows selected with run_columns into (runs with a text id, number of rows whose id is not stored as strict UTF-8 text)."""
+    runs, hidden = [], 0
+    for row in rows:
+        value = decode_run(row)
+        if value is None:
+            hidden += 1
+        else:
+            runs.append(value)
+    return runs, hidden
 
 
 def _recovered(raw, key):
@@ -200,9 +231,14 @@ class Store:
         it. The other rows are still repaired. Returns the ids of the skipped rows in rowid order, None for a row whose id is not stored as
         strict UTF-8 text. A database error is not skipped: it aborts the question repair."""
         with self.connect(True) as db:
-            db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running') AND id NOT IN (SELECT run_id FROM external_sessions)")
-            for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
-                db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (f"취소를 요청한 뒤 실행이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. {cancel_result(row['stage'])} 저장하지 않았습니다.", row['id']))
+            # NOT EXISTS with IS, and rowid addressing, keep a run whose id is NULL, a BLOB or not UTF-8 text from escaping this repair.
+            db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running') AND NOT EXISTS (SELECT 1 FROM external_sessions e WHERE e.run_id IS runs.id)")
+            # A run whose id is not text cannot be resumed or cancelled by id, so it is interrupted even when an external session is stored under the same bytes.
+            for row in db.execute("SELECT rowid,typeof(id),CAST(id AS BLOB) FROM runs WHERE status IN ('queued','running')").fetchall():
+                if row_key(row[1], row[2]) is None:
+                    db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE rowid=?", (row[0],))
+            for row in db.execute("SELECT rowid,stage FROM runs WHERE status='cancelling'").fetchall():
+                db.execute("UPDATE runs SET status='cancelled',detail=? WHERE rowid=?", (f"취소를 요청한 뒤 실행이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. {cancel_result(row['stage'])} 저장하지 않았습니다.", row['rowid']))
 
         skipped = []
         with self.connect(True) as db:
@@ -382,12 +418,18 @@ class Store:
                 raise ValueError('버전을 찾을 수 없습니다.')
             versions = [dict(r) for r in db.execute('SELECT version,filename,sha256,created_at FROM versions WHERE document_id=? ORDER BY version DESC', (document_id,))]
             items = [self.unpack(r) for r in db.execute('SELECT * FROM items WHERE document_id=? AND version=? ORDER BY kind,id', (document_id, selected))]
-            runs = {r['id']: self.unpack_run(r) for r in db.execute('SELECT * FROM runs WHERE document_id=? AND version=?', (document_id, selected))}
+            all_runs = [dict(r) for r in db.execute(f'SELECT {run_columns(db)} FROM runs WHERE document_id=? AND version=?', (document_id, selected))]
+            runs = {}
+            for row in all_runs:
+                decoded = decode_run(row)
+                if decoded is not None:
+                    runs[decoded['id']] = self.unpack_run(decoded)
             dictionary = next((i for i in items if i['kind'] == 'ontology'), None)
             extracted = set()
-            for run in runs.values():
-                if run['stage'] == 'extract' and run['status'] == 'success' and run['ontology']:
-                    extracted.add(extraction_key(run['ontology']))
+            # A successful extraction whose run id is unreadable still pins its dictionary, as create_run (which never reads the id) sees it.
+            for row in all_runs:
+                if row['stage'] == 'extract' and row['status'] == 'success' and row['ontology']:
+                    extracted.add(extraction_key(json.loads(row['ontology'])))
             for item in items:
                 origin = runs.get(item['run_id'], {})
                 pin = origin.get('ontology') if origin.get('stage') == 'extract' else None
@@ -395,7 +437,8 @@ class Store:
             can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
             latest = max(runs.values(), key=lambda r: (r['created_at'], r['id']), default=None)
             latest_run = {k: latest[k] for k in ('id', 'stage', 'status', 'version')} if latest else None
-            return dict(doc) | dict(source) | {'latest_run': latest_run, 'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and dictionary is not None and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
+            return dict(doc) | dict(source) | {'latest_run': latest_run, 'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and dictionary is not None and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted)),
+                                       'unreadable_runs': len(all_runs) - len(runs)}
 
     @staticmethod
     def unpack(row):
@@ -464,7 +507,13 @@ class Store:
 
     def usage_owners(self, limit=1000):
         with self.connect() as db:
-            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,detail,created_at,(SELECT length(text) FROM versions v WHERE v.document_id=r.document_id AND v.version=r.version) AS source_length FROM runs r ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
+            runs = []
+            for row in db.execute('SELECT typeof(id) AS id_type,CAST(id AS BLOB) AS id_raw,agent,model,stage,status,detail,created_at,(SELECT length(text) FROM versions v WHERE v.document_id=r.document_id AND v.version=r.version) AS source_length FROM runs r ORDER BY created_at DESC,rowid'):
+                value = decode_run(row)
+                if value is not None:
+                    runs.append(value | {'kind': 'runs'})
+                    if len(runs) > limit:
+                        break
             questions = []
             for row in db.execute('SELECT typeof(id),CAST(id AS BLOB),CAST(payload AS BLOB) FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
                 job = question_job(row[2], row_key(row[0], row[1]))
@@ -567,20 +616,35 @@ class Store:
 
     def runs(self):
         with self.connect() as db:
-            return [self.unpack_run(r) for r in db.execute('SELECT * FROM runs ORDER BY created_at DESC LIMIT 100')]
+            found = []
+            for row in db.execute(f'SELECT {run_columns(db)} FROM runs ORDER BY created_at DESC,rowid'):
+                value = decode_run(row)
+                if value is not None:
+                    found.append(self.unpack_run(value))
+                    if len(found) == 100:
+                        break
+            return found
 
     def dictionary_retries(self, run):
         """A run cancelled while queued (its detail is QUEUED_CANCEL_DETAIL) never called a model or saved a checkpoint, so it is not one of the eight candidates; extraction_retries leaves it out the same way."""
         with self.connect() as db:
-            return [self.unpack_run(r) for r in db.execute(
-                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?) AND id<>? AND ontology IS ? ORDER BY created_at DESC,id DESC LIMIT 8",
-                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, run['id'], canonical(run['ontology']) if run['ontology'] else None))]
+            rows = db.execute(
+                f"SELECT {run_columns(db)} FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?) AND ontology IS ?",
+                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, canonical(run['ontology']) if run['ontology'] else None))
+            return self.latest_prior_runs(rows, run)
 
     def extraction_retries(self, run):
         with self.connect() as db:
-            return [self.unpack_run(r) for r in db.execute(
-                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?) AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
-                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, run['id']))]
+            rows = db.execute(
+                f"SELECT {run_columns(db)} FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?)",
+                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL))
+            return self.latest_prior_runs(rows, run)
+
+    def latest_prior_runs(self, rows, run):
+        """The eight newest rows other than run whose id is stored as text. A row whose id is not is no candidate, and is dropped before the limit so it cannot crowd a readable one out."""
+        prior = [r for r in readable_runs(rows)[0] if r['id'] != run['id']]
+        prior.sort(key=lambda r: (r['created_at'], r['id']), reverse=True)
+        return [self.unpack_run(r) for r in prior[:8]]
 
     def run_status(self, run_id, status, detail=''):
         """Moves a run to status with detail unless it is stored as cancelling, cancelled or success: a cancelling or cancelled run raises
@@ -746,11 +810,20 @@ class Store:
                 f'취소하면 바로 {retry}할 수 있고, 다른 실행과 질문은 계속됩니다.{keeps}')
 
     @staticmethod
+    def anonymous_run_id(row):
+        """The row as a dict with id as text, or UNREADABLE_RUN_ID when its stored id is not text, so a refusal names no stored bytes."""
+        value = dict(row)
+        key = row_key(value.pop('id_type'), value.pop('id_raw'))
+        value.pop('rowid_', None)
+        return {'id': UNREADABLE_RUN_ID if key is None else key} | value
+
+    @staticmethod
     def refuse_while_run_holds_dictionary(db, document_id, version):
         """Inside the caller's write transaction: a queued or running run on this document version pins its dictionary, so a change is refused until the run ends or is cancelled."""
-        run = db.execute("SELECT id,stage,agent,model,status FROM runs WHERE document_id=? AND version=? AND status IN ('queued','running')",
+        run = db.execute("SELECT typeof(id) AS id_type,CAST(id AS BLOB) AS id_raw,stage,agent,model,status FROM runs WHERE document_id=? AND version=? AND status IN ('queued','running')",
                          (document_id, version)).fetchone()
         if run:
+            run = Store.anonymous_run_id(run)
             job = '관계 추출' if run['stage'] == 'extract' else '사전 재생성'
             state = '대기 중' if run['status'] == 'queued' else '처리 중'
             raise Conflict(f"이 문서 버전의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 사전을 바꿀 수 없습니다. "
@@ -764,7 +837,8 @@ class Store:
     @staticmethod
     def refuse_while_run_needs_unchanged_document(db, document_id):
         """Inside the caller's write transaction: a queued or running run of this document that needs it unchanged makes a new source version refused until the run ends or is cancelled."""
-        run = db.execute("SELECT * FROM runs WHERE document_id=? AND status IN ('queued','running')", (document_id,)).fetchone()
+        run = db.execute(f"SELECT {run_columns(db)} FROM runs WHERE document_id=? AND status IN ('queued','running')", (document_id,)).fetchone()
+        run = Store.anonymous_run_id(run) if run else None
         if run and Store.needs_unchanged_document(run):
             job = '병렬 수나 청크 임계 정책을 등록한 관계 추출' if run['stage'] == 'extract' else '사전 재생성'
             state = '대기 중' if run['status'] == 'queued' else '처리 중'
@@ -1082,10 +1156,27 @@ class Store:
             snapshots = {r['id'] for r in db.execute('SELECT id,payload FROM snapshots') if any(d['id'] == document_id and d['current_version'] in removed for d in json.loads(r['payload'])['documents'])}
             question_ids = [key for key, job in questions if job is not None and job['snapshot'] in snapshots]
             query_ids = [r['id'] for r in db.execute('SELECT id,payload FROM queries') if json.loads(r['payload'])['snapshot'] in snapshots]
-            run_ids = [r['id'] for r in db.execute('SELECT id,version FROM runs WHERE document_id=?', (document_id,)) if r['version'] in removed]
-            db.executemany('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', [('runs', key) for key in run_ids] + [('questions', key) for key in question_ids])
-            for table, keys in [('questions', question_ids), ('queries', query_ids), ('snapshots', snapshots), ('runs', run_ids)]:
+            doomed = [(r[0], row_key(r[1], r[2]), r[1], bytes(r[2]) if r[2] is not None else None)
+                      for r in db.execute('SELECT rowid,typeof(id),CAST(id AS BLOB),version FROM runs WHERE document_id=?', (document_id,)) if r[3] in removed]
+            db.executemany('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', [('questions', key) for key in question_ids])
+            for table, keys in [('questions', question_ids), ('queries', query_ids), ('snapshots', snapshots)]:
                 db.executemany(f'DELETE FROM {table} WHERE id=?', [(key,) for key in keys])
+            # Runs go by rowid so a run whose id is NULL, a BLOB or not UTF-8 text is deleted too.
+            db.executemany('DELETE FROM runs WHERE rowid=?', [(rowid,) for rowid, _, _, _ in doomed])
+            unlocated = 0
+            for _, key, kind, raw in doomed:
+                # A text id and a BLOB of the same bytes name one log folder; it is removed only when no surviving run of the other type owns it.
+                if key is not None:
+                    if db.execute("SELECT 1 FROM runs WHERE typeof(id)='blob' AND id=?", (key.encode(),)).fetchone():
+                        unlocated += 1
+                    else:
+                        db.execute('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', ('runs', key))
+                    continue
+                name = raw.decode('ascii') if kind == 'blob' and raw is not None and re.fullmatch(rb'[0-9a-f]{32}', raw) else None
+                if name is not None and not db.execute("SELECT 1 FROM runs WHERE typeof(id)='text' AND id=?", (name,)).fetchone():
+                    db.execute('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', ('runs', name))
+                else:
+                    unlocated += 1
             for version in removed:
                 db.execute('DELETE FROM events WHERE item_id IN (SELECT id FROM items WHERE document_id=? AND version=?)', (document_id, version))
                 db.execute('DELETE FROM items WHERE document_id=? AND version=?', (document_id, version))
@@ -1097,13 +1188,14 @@ class Store:
                 db.execute('DELETE FROM documents WHERE id=?', (document_id,))
         return {'document_id': document_id, 'removed_versions': removed, 'current_version': current,
                 'removed_snapshots': len(snapshots), 'removed_questions': len(question_ids), 'removed_queries': len(query_ids),
-                'unreadable_questions_kept': sum(job is None for _, job in questions)}
+                'unreadable_questions_kept': sum(job is None for _, job in questions), 'unlocated_run_logs': unlocated}
 
     def pending_cleanup(self):
+        """The pending log obligations in rowid order as {'rowid', 'kind', 'id'}; kind or id is None when it is not stored as strict UTF-8 text (never read as text, so no stored value can make this raise)."""
         with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM log_cleanup ORDER BY kind,id')]
+            return [{'rowid': r[0], 'kind': row_key(r[1], r[2]), 'id': row_key(r[3], r[4])}
+                    for r in db.execute('SELECT rowid,typeof(kind),CAST(kind AS BLOB),typeof(id),CAST(id AS BLOB) FROM log_cleanup ORDER BY rowid')]
 
-    def finish_cleanup(self, kind, key):
+    def drop_cleanup(self, rowid):
         with self.connect(True) as db:
-            # IS, not =, so an obligation stored with a NULL id is removed too; for a str or bytes id the two match the same rows.
-            db.execute('DELETE FROM log_cleanup WHERE kind=? AND id IS ?', (kind, key))
+            db.execute('DELETE FROM log_cleanup WHERE rowid=?', (rowid,))

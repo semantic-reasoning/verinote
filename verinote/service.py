@@ -1008,12 +1008,13 @@ class Service:
         with self.cleanup_lock:
             for task in self.store.pending_cleanup():
                 kind, key = task['kind'], task['id']
-                if kind not in ('runs', 'questions'):
+                if kind is None or key is None or not re.fullmatch(r'[a-f0-9]{32}', key):
+                    if kind in ('runs', 'questions') or kind is None:
+                        # The server names log folders only with ident() ids (32 lowercase hex), so this obligation names no folder: it is
+                        # removed without touching any file. Its columns are never read as text, so a stored value cannot stop the server.
+                        self.store.drop_cleanup(task['rowid'])
                     continue
-                if not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{32}', key):
-                    # The server names log folders only with ident() ids (32 lowercase hex), so this obligation names no folder: it is
-                    # removed without touching any file.
-                    self.store.finish_cleanup(kind, key)
+                if kind not in ('runs', 'questions'):
                     continue
                 root = self.root.resolve()
                 parent = root / kind
@@ -1023,7 +1024,7 @@ class Service:
                         continue
                     if path.exists():
                         shutil.rmtree(path)
-                    self.store.finish_cleanup(kind, key)
+                    self.store.drop_cleanup(task['rowid'])
                 except OSError:
                     # Keep the durable obligation; startup and explicit retry will try again.
                     continue
@@ -1041,4 +1042,8 @@ class Service:
         if not isinstance(request, dict) or set(request) != {'expected_version', 'expected_generation'}:
             raise ValueError('expected_version과 expected_generation만 필요합니다.')
         result = self.store.delete_document(document_id, latest_only, request['expected_version'], request['expected_generation'])
-        return result | self.cleanup_logs()
+        cleanup = self.cleanup_logs()
+        # Logs of a deleted run that names no folder (NULL, not UTF-8 text, a BLOB that is no server-made name) cannot be verified gone.
+        if result['unlocated_run_logs'] and cleanup['cleanup_status'] == 'complete':
+            cleanup['cleanup_status'] = 'incomplete'
+        return result | cleanup
