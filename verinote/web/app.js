@@ -164,6 +164,7 @@ async function openDoc(id, version) {
   const d = selectedDoc, latest = d.version === d.current_version;
   showView('library');
   $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}<div id="document-progress" aria-live="polite"></div></div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p>${renderBulkControls(d)}<div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
+  if(d.unreadable_runs)$('#document-detail').insertAdjacentHTML('afterbegin',`<p class="muted">ID를 읽을 수 없는 실행 기록 ${d.unreadable_runs}개는 실행 기록과 이 화면에 표시하지 않습니다.</p>`);
   if(d.latest_run)watchRun(d.latest_run.id,id,d.version,d.latest_run.status);
   $('#document-detail').scrollIntoView({behavior:'smooth',block:'start'});
   $('#bulk-select-all').onchange = e=>{for(const box of document.querySelectorAll('[data-bulk-item]')) box.checked=e.target.checked;updateBulkSelection();};
@@ -981,7 +982,7 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
     for(const selector of ['#document-detail','#query-result','#answer-result','#runs'])$(selector).innerHTML='';
     await loadLibrary();await loadQueries();await loadQuestions();await loadUnreadableQuestions();await loadCleanup();
     if(result.current_version)await openDoc(doc.id,result.current_version);
-    notice(deleteNotice(result,latestOnly),Boolean(result.cleanup_pending));
+    notice(deleteNotice(result,latestOnly),Boolean(result.cleanup_pending||result.unlocated_run_logs));
   }catch(error){
     if(error.status===409){$('#delete-dialog').close();await loadLibrary();await openDoc(doc.id);notice(error.message+' 삭제하려면 다시 선택하세요.',true);}
     else{$('#delete-error').textContent=error.message;$('#confirm-delete').disabled=false;}
@@ -989,7 +990,7 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
 });
 function deleteNotice(result,latestOnly){
   const done=result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.');
-  return done+(result.unreadable_questions_kept?` 손상된 질문 기록 ${result.unreadable_questions_kept}개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
+  return done+(result.unlocated_run_logs?` 읽을 수 없는 ID의 실행 로그 ${result.unlocated_run_logs}개는 폴더를 알 수 없어 정리했는지 확인하지 못했습니다.`:'')+(result.unreadable_questions_kept?` 손상된 질문 기록 ${result.unreadable_questions_kept}개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
 }
 function renderUnreadableQuestions(list){
   const ids=list.ids||[],hidden=list.hidden||0;
