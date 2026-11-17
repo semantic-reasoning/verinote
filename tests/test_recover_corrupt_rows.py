@@ -10,7 +10,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from verinote.server import main
-from verinote.store import QUESTION_RESTART_CANCEL, Store, UnreadableQuestion, ident
+from verinote.store import (
+    QUESTION_RESTART_CANCEL,
+    Store,
+    UnreadableQuestion,
+    ident,
+    question_job,
+)
 
 SENTINEL = 'SENTINEL911'
 ROUND = [{'round': 1, 'status': 'running', 'nodes': []}]
@@ -123,6 +129,19 @@ class RecoverCorruptRows(unittest.TestCase):
         for key in bad:
             with self.assertRaises(UnreadableQuestion):
                 self.store.question(key)
+        self.assertEqual(self.store.unreadable_questions()['ids'], bad)
+
+    def test_running_question_whose_first_round_is_open_and_second_is_a_string_is_skipped_and_unwritten(self):
+        # The defect is in the second round only: the any() step passes on the first, so the rewriting comprehension alone must reject the row.
+        rounds = [{'round': 1, 'status': 'running', 'nodes': []}, 'x']
+        bad = self.seed([lambda k: full(k, status='running', context_processing=rounds)])
+        before = [self.raw(key) for key in bad]
+        self.assertIsNone(question_job(before[0], bad[0]))
+        self.assertEqual(self.store.recover(), bad)
+        self.assertEqual([self.raw(key) for key in bad], before)
+        self.assertNotIn(bad[0], self.writes())
+        with self.assertRaises(UnreadableQuestion):
+            self.store.question(bad[0])
         self.assertEqual(self.store.unreadable_questions()['ids'], bad)
 
     def test_success_row_with_a_string_round_is_neither_written_nor_returned(self):
