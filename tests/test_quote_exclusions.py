@@ -95,7 +95,7 @@ class Exclusions(unittest.TestCase):
         app = Path('verinote/web/app.js').read_text(encoding='utf-8')
         function = app[app.index('function renderCoverage('):app.index('function usageStage(')]
         script = ("const esc=x=>String(x).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');\n"
-                  + function + '\nconsole.log(renderCoverage(' + json.dumps(report) + '));')
+                  + app[app.index('function visibleSpelling('):app.index('let termState')] + function + '\nconsole.log(renderCoverage(' + json.dumps(report) + '));')
         return subprocess.check_output(['node'], input=script, text=True)
 
     def checkpoint_path(self, run):

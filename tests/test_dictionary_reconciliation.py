@@ -296,7 +296,7 @@ class Pipeline(unittest.TestCase):
         with self.assertRaises(ValueError):validate_report(saved,run,doc,len(source))
         self.assertFalse(read_report(self.root,self.store,run['id'],document_id='other')['available'])
         js=Path('verinote/web/app.js').read_text();helper=js[js.index('function renderDictionaryReconciliations('):js.index('function renderDictionaryExclusions(')]
-        script="const assert=require('node:assert/strict');const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');\n"+helper+"\n"+r'''
+        script="const assert=require('node:assert/strict');const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');\n"+js[js.index('function visibleSpelling('):js.index('let termState')]+helper+"\n"+r'''
 const html=renderDictionaryReconciliations({available:true,applied:1,deferred:1,total_count:2,items:[{chunk:1,key:'<img>',status:'applied',reason:'<script>',before:{name:'<img>'},after:{quote:'<script>'}}],truncated_count:1});
 assert(!html.includes('<img>'));assert(!html.includes('<script>'));assert(html.includes('변경 전'));assert(html.includes('생략'));
 assert(renderDictionaryReconciliations({available:false,reason:'미확인'}).includes('미확인'));
