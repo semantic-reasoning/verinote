@@ -8,6 +8,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .dictionary_reconciliation import (
+    fact_endpoint_index,
+    fact_spacing_warnings,
+    new_request_budget,
+)
 from .ontology import EXTRACTION_CONTRACT_VERSION, extraction_key
 
 
@@ -499,10 +504,15 @@ class Store:
             for row in all_runs:
                 if row['stage'] == 'extract' and row['status'] == 'success' and row['ontology']:
                     extracted.add(extraction_key(json.loads(row['ontology'])))
+            indexes, spacing_budget = {}, new_request_budget()
             for item in items:
                 origin = runs.get(item['run_id'], {})
                 pin = origin.get('ontology') if origin.get('stage') == 'extract' else None
                 item['dictionary'] = {k: pin[k] for k in ('id', 'revision', 'sha256')} if pin else None
+                if item['kind'] == 'fact':
+                    if item['run_id'] not in indexes:
+                        indexes[item['run_id']] = fact_endpoint_index(pin, spacing_budget) if pin else None
+                    item['quote_spacing'] = fact_spacing_warnings(item['payload'], indexes[item['run_id']], spacing_budget)
             can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
             latest = max(runs.values(), key=lambda r: (r['created_at'], r['id']), default=None)
             latest_run = {k: latest[k] for k in ('id', 'stage', 'status', 'version')} if latest else None
