@@ -19,6 +19,7 @@ const source=fs.readFileSync('verinote/web/app.js','utf8');
 const elements=new Map(),$=s=>{if(!elements.has(s))elements.set(s,{innerHTML:'',value:''});return elements.get(s);};
 const ctx=vm.createContext({$,labels:{},renderUsage:()=>'',renderQuestionWindow:()=>'',renderQuestionMeanings:()=>'',executionGuidance:()=>'',renderQueueAhead:()=>'',bindMeaningControls:()=>{},renderEvidence:()=>'',renderAnalysis:()=>''});
 vm.runInContext(source.match(/^const esc = .*$/m)[0]+';'+source.match(/^const badge = .*$/m)[0],ctx);
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),ctx);
 vm.runInContext(source.slice(source.indexOf('function renderAnswer('),source.indexOf('let deleteTarget;')),ctx);
 ctx.job=JSON.parse(fs.readFileSync(0,'utf8'));vm.runInContext('renderAnswer(job)',ctx);
 process.stdout.write($('#answer-result').innerHTML.replace(/<[^>]+>/g,'|'));

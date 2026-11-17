@@ -113,6 +113,7 @@ class QuestionMeanings(unittest.TestCase):
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('verinote/web/app.js','utf8');
 const nodes={};const c=vm.createContext({esc:v=>String(v??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),sourceLink:()=>'<a>원문</a>',$:s=>nodes[s],notice:()=>{},value:VALUE});
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),c);
 vm.runInContext(source.slice(source.indexOf('function renderEvidence('),source.indexOf('function renderAnswer(')),c);
 const html=vm.runInContext('renderQuestionMeanings(value,"frozen")',c);
 assert(html.includes('음료'));assert(html.includes('이동수단'));assert(html.includes('가람'));assert(html.includes('나래'));
@@ -136,6 +137,7 @@ assert(vm.runInContext('renderGraphMeanings({})',c).includes('이전 그래프 �
 const source=fs.readFileSync('verinote/web/app.js','utf8');
 const nodes={'#query-result':{innerHTML:'',querySelectorAll:()=>[]},'#download-query':{}};
 const c=vm.createContext({esc:String,sourceLink:()=>'',r:VALUE,$:s=>nodes[s]});
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),c);
 vm.runInContext(source.slice(source.indexOf('function renderEvidence('),source.indexOf('function renderAnswer(')),c);
 vm.runInContext(source.slice(source.indexOf('function renderQuery('),source.indexOf('async function loadQueries(')),c);
 vm.runInContext('renderQuery(r)',c);let html=nodes['#query-result'].innerHTML;

@@ -447,7 +447,7 @@ class WarningUI(unittest.TestCase):
         helper = source[source.index('function renderDictionaryExclusions('):source.index('function judgedAlias(')]
         script = r'''
 const assert=require('node:assert/strict');const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
-''' + helper + r'''
+''' + source[source.index('function visibleSpelling('):source.index('let termState')] + helper + r'''
 const report={available:true,total_count:2,direct_count:1,dependent_count:1,truncated_count:1,details_loaded:true,items:[{chunk:2,kind:'entities',row:17,identifier:'<img>',reason:'<script>'}]};
 const html=renderDictionaryExclusions(report);assert(html.includes('2개 제외'));assert(html.includes('구간 2'));assert(html.includes('상세는 생략'));assert(!html.includes('<img>'));assert(!html.includes('<script>'));
 assert.equal(renderDictionaryExclusions({available:true,total_count:0}),'');

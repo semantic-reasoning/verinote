@@ -718,6 +718,7 @@ class WikiQuestionTests(unittest.TestCase):
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('verinote/web/app.js','utf8');
 const context=vm.createContext({esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),sourceLink:()=>'<a>원문</a>'});
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),context);
 vm.runInContext(source.slice(source.indexOf('function renderEvidence('),source.indexOf('function renderAnswer(')),context);
 context.e={kind:'wiki',page_id:'page',revision:2,title:'<img>',text:'<script>',version:1,sha256:'sha',offset:0,end_offset:2000,total_chars:4000,partial:true,claim_indices:[0]};
 let out=vm.runInContext('renderEvidence("E1",e)',context);assert(out.includes('승인 위키'));assert(out.includes('일부 구간'));assert(out.includes('r2'));assert(out.includes('&lt;script&gt;'));assert(!out.includes('<img>'));

@@ -221,6 +221,7 @@ const context=vm.createContext({console,doc,$:el,selectedDoc:doc,syncProviderCon
  api:(path,method,data)=>{requests.push({path,method,data});return responder(path,method,data);},
  loadLibrary:async()=>{},openDoc:async(...args)=>refreshes.push(args),notice:(...args)=>notices.push(args)});
 vm.runInContext('let bulkReviewTarget=null,bulkSubmitting=false,documentRequest=0;const MAX_BULK_APPROVAL=2000;',context);
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),context);
 vm.runInContext(source.slice(source.indexOf('function bulkCandidates('),source.indexOf('function openReview(')),context);
 function call(code){return vm.runInContext(code,context);}
 const html=call('renderBulkControls(doc)');assert(html.includes('선택 0개 승인'));assert(html.includes('전체 선택 (2개)'));
@@ -237,7 +238,7 @@ call('updateBulkSelection()');assert.equal(el('#bulk-count').textContent,'선택
 boxes[1].checked=true;call('updateBulkSelection()');assert(el('#bulk-select-all').checked);
 call('openBulkReview()');assert(el('#bulk-review-dialog').open);assert.equal(el('#bulk-historical').hidden,false);
 assert(el('#bulk-review-scope').textContent.includes('총 2개'));
-assert(el('#bulk-review-preview').innerHTML.includes('&lt;img src=x&gt;'));assert(!el('#bulk-review-preview').innerHTML.includes('<img'));
+assert(el('#bulk-review-preview').innerHTML.includes('&lt;img<span class="ws" title="공백">␣</span>src=x&gt;'));assert(!el('#bulk-review-preview').innerHTML.includes('<img'));
 assert(!el('#bulk-review-preview').innerHTML.includes('<b>evidence'));
 const event={preventDefault(){},target:el('#bulk-review-form')};
 (async()=>{

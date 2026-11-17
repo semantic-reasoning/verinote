@@ -31,10 +31,10 @@ from verinote.store import Conflict
 def render_loss(report):
     app = (Path(__file__).resolve().parents[1]/'verinote/web/app.js').read_text()
     renderer = app[app.index('function renderLossAudit('):]
-    script = re.search(r'^const esc = .*$', app, re.M)[0] + '\n' + renderer
+    script = re.search(r'^const esc = .*$', app, re.M)[0] + '\n' + app[app.index('function visibleSpelling('):app.index('let termState')] + renderer
     script += "\nconsole.log(renderLossAudit(JSON.parse(require('fs').readFileSync(0,'utf8'))));"
     return subprocess.run(['node', '-e', script], input=json.dumps(report),
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, check=True).stdout.replace('<span class="ws" title="공백">␣</span>', ' ')
 
 
 class LossWorkflow(unittest.TestCase):
@@ -350,7 +350,7 @@ class LossUIAndUsage(unittest.TestCase):
         import subprocess
         app=Path('verinote/web/app.js').read_text()
         function=app[app.index('function renderLossAudit('):]
-        script="const esc=x=>String(x).replaceAll('<','&lt;');\n"+function+"\nconsole.log(renderLossAudit("+json.dumps({'available':True,'processed_chunks':1,'total_chunks':1,'initial_fact_count':1,'recovered_fact_count':0,'located_unresolved_count':1,'unverified_count':0,'zero_fact_chunks':1,'recovery_completed':0,'recovery_skipped':1,'chunks':[{'recovery_status':'budget_exhausted','retained_fact_count':0,'flags':['zero_retained'],'unresolved':[{'subject':'<script>','predicate':'r','object':'b','reason':'type_mismatch','origin':'initial','row':0,'span':[0,500],'quote':'<img>'+'a'*400}]}]})+"));"
+        script="const esc=x=>String(x).replaceAll('<','&lt;');\n"+app[app.index('function visibleSpelling('):app.index('let termState')]+function+"\nconsole.log(renderLossAudit("+json.dumps({'available':True,'processed_chunks':1,'total_chunks':1,'initial_fact_count':1,'recovered_fact_count':0,'located_unresolved_count':1,'unverified_count':0,'zero_fact_chunks':1,'recovery_completed':0,'recovery_skipped':1,'chunks':[{'recovery_status':'budget_exhausted','retained_fact_count':0,'flags':['zero_retained'],'unresolved':[{'subject':'<script>','predicate':'r','object':'b','reason':'type_mismatch','origin':'initial','row':0,'span':[0,500],'quote':'<img>'+'a'*400}]}]})+"));"
         result=subprocess.run(['node','-e',script],capture_output=True,text=True,check=True).stdout
         self.assertNotIn('<script>',result); self.assertIn('&lt;img>',result)
         self.assertIn('a'*400,result); self.assertIn('4회 한도로 미점검',result)

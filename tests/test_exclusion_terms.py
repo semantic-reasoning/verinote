@@ -179,7 +179,8 @@ APP = Path('verinote/web/app.js').read_text(encoding='utf-8')
 def render(report):
     esc = APP[APP.index('const esc ='):APP.index('const labels =')]
     function = APP[APP.index('function renderCoverage('):APP.index('function usageStage(')]
-    return subprocess.check_output(['node'], input=esc + function + '\nconsole.log(renderCoverage(' + json.dumps(report) + '));', text=True)
+    spelling = APP[APP.index('function visibleSpelling('):APP.index('let termState')]
+    return subprocess.check_output(['node'], input=esc + spelling + function + '\nconsole.log(renderCoverage(' + json.dumps(report) + '));', text=True).replace('<span class="ws" title="공백">␣</span>', ' ')
 
 
 def report(rows, **extra):

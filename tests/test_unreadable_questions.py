@@ -358,6 +358,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('verinote/web/app.js','utf8');
 const ctx=vm.createContext({});
 vm.runInContext(source.match(/^const esc = .*$/m)[0]+';'+source.match(/^const labels = .*$/m)[0],ctx);
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),ctx);
 vm.runInContext(source.slice(source.indexOf('function renderQueueAhead('),source.indexOf('function renderAnalysisProgress(')),ctx);
 vm.runInContext(source.slice(source.indexOf('function deleteNotice('),source.indexOf('let unreadableTarget;')),ctx);
 ''' + body + "\nconsole.log('ok');"

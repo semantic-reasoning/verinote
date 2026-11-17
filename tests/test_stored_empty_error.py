@@ -21,6 +21,7 @@ const ctx=vm.createContext({$,executionGuidance:()=>'GUIDANCE',bindMeaningContro
   renderCoverage:stub,renderLossAudit:stub,date:stub,sourceLink:stub});
 vm.runInContext(['esc','labels','badge'].map(n=>source.match(new RegExp(`^const ${n} = .*$`,'m'))[0]).join(';'),ctx);
 const record=JSON.parse(fs.readFileSync(0,'utf8'));
+vm.runInContext(source.slice(source.indexOf('function visibleSpelling('),source.indexOf('let termState')),ctx);
 '''
 ANSWER = PRELUDE + r'''
 vm.runInContext(source.slice(source.indexOf('function renderAnswer('),source.indexOf('let deleteTarget;')),ctx);
