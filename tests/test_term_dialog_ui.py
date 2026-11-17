@@ -175,6 +175,9 @@ groups.visible=async()=>{
  assert(v('a\nb').includes('↵'));assert(v('a\tb').includes('⇥'));
  for(const [ch,code] of [[' ','00A0'],['　','3000'],['\u0085','0085'],['​','200B'],['‍','200D'],['﻿','FEFF'],['­','00AD']])
   assert(v('a'+ch+'b').includes(`[U+${code}]`),code);
+ for(const ch of ['\u00a0','\u3000','\u0085','\x1c'])assert(v('a'+ch+'b').includes('title="공백 문자(공백과 종류만 다름)"'),String(ch.charCodeAt(0)));
+ for(const [ch,code] of [['\u200b','200B'],['\ufeff','FEFF'],['\u00ad','00AD'],['\u3164','3164'],['\u115f','115F'],['\u1160','1160'],['\uffa0','FFA0']]){
+  const o=v('a'+ch+'b');assert(o.includes(`<span class="ws" title="보이지 않는 문자">[U+${code}]</span>`),code);assert(!o.includes(ch),code);}
  assert(v('<b> x').includes('&lt;b&gt;')&&!v('<b> x').includes('<b>'));
  assert(!v('가').includes('<span'));
 };

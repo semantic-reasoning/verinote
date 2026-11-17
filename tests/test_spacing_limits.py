@@ -45,8 +45,8 @@ FILLER = 'ㅤ'
 FOOTER = ('조회와 질문 안내는 ID와 원문 명칭 중 어느 표기로도 이 개체를 찾으므로, 띄어쓰기만 다른 두 표기가 한 개체로 연결됩니다. '
           '띄어쓰기는 뜻을 바꿀 수 있으니 같은 대상인지 원문과 대조하고, 다르면 내용 수정으로 ID나 원문 명칭을 고치세요. '
           '이 목록은 승인을 막지 않습니다. 한쪽에 줄바꿈이 있는 자리, 공백 폭이나 종류만 다른 자리는 띄어쓰기 차이로 보지 않습니다. '
-          '공백이 아닌 문자(길이가 없는 문자, 빈칸처럼 보이는 한글 채움 문자 U+3164 등)는 공백으로 보지 않으므로, '
-          '이런 문자가 한쪽에만 있거나 자리가 달라 공백을 빼도 두 표기가 같지 않으면 표시하지 않습니다.')
+          '길이가 없는 문자(U+200B 등)와 빈칸처럼 보이는 한글 채움 문자(U+3164 등)는 공백 사이의 빈 자리로 보고 비교하므로, '
+          '한쪽에만 공백이 있는 자리가 있으면 이런 문자가 함께 있어도 표시합니다.')
 
 
 def graph(dictionary):
@@ -86,9 +86,20 @@ class Criterion(unittest.TestCase):
                 self.assertEqual(spacing_kind(*pair), 'layout')
                 self.assertEqual(listed(pair), [])
 
-    def test_a_non_whitespace_character_on_one_side_or_at_another_spot_is_neither(self):
-        for pair in ((B, f'납품{ZWSP}계획'), (A, f'납품 {ZWSP}계획'), (B, f'납품{FILLER}계획'), (A, f'납품{FILLER}계획'),
-                     (f'납{ZWSP}품 계획', f'납품{ZWSP}계획'), (A, A), (A, '정산 문서')):
+    def test_a_space_beside_or_apart_from_an_invisible_character_is_listed(self):
+        for pair in ((A, f'납품{ZWSP}계획'), (B, f'납품 {ZWSP}계획'), (A, f'납품{FILLER}계획'), (f'납{ZWSP}품 계획', f'납품{ZWSP}계획')):
+            with self.subTest(pair=pair):
+                self.assertEqual(spacing_kind(*pair), 'spacing')
+                self.assertEqual(listed(pair), [(1, *pair)])
+
+    def test_invisible_characters_alone_or_beside_spaces_on_both_sides_are_layout_and_not_listed(self):
+        for pair in ((B, f'납품{ZWSP}계획'), (B, f'납품{FILLER}계획'), (A, f'납품 {ZWSP}계획')):
+            with self.subTest(pair=pair):
+                self.assertEqual(spacing_kind(*pair), 'layout')
+                self.assertEqual(listed(pair), [])
+
+    def test_a_different_visible_character_or_equal_spellings_are_neither(self):
+        for pair in ((A, A), (A, '정산 문서'), (f'납{ZWSP}품 계획', f'납품{ZWSP}보고')):
             with self.subTest(pair=pair):
                 self.assertIsNone(spacing_kind(*pair))
                 self.assertEqual(listed(pair), [])
@@ -279,22 +290,40 @@ class ExtractionLimit(unittest.TestCase):
         self.assertNotIn(A, fact['quote'])
 
 
-class InvisibleCharacterLimit(unittest.TestCase):
-    """Documented limit (#886): a spelling with a non-whitespace character on one side only is neither refused nor listed."""
-    SRC = f'{A} {B} 납품 {ZWSP}계획 납품{FILLER}계획 끝'
+class InvisibleCharacters(unittest.TestCase):
+    """#886: zero-width (Cf) characters and Hangul fillers count as blanks in the refusal and the list, never in linking."""
+    SRC = f'{A} {B} 납품 {ZWSP}계획 납품{ZWSP}계획 납품{ZWSP} 계획 납품 {FILLER}계획 납품{FILLER}계획 납품{ZWSP}보고 끝'
 
-    def test_model_alias_with_an_invisible_character_is_not_refused(self):
-        d, x, _ = reconcile(self.SRC, {'entities': [entity(B)], 'aliases': [{'alias': f'납품 {ZWSP}계획', 'entity': B}]})
-        self.assertEqual(aliases(d), [(f'납품 {ZWSP}계획', B)])
-        self.assertEqual(codes(x), [])
+    def test_model_alias_with_an_invisible_character_is_refused(self):
+        for alias in (f'납품 {ZWSP}계획', f'납품{ZWSP} 계획', f'납품 {FILLER}계획', f'납품{ZWSP}계획'):
+            with self.subTest(alias=alias):
+                d, x, _ = reconcile(self.SRC, {'entities': [entity(B)], 'aliases': [{'alias': alias, 'entity': B}]})
+                self.assertEqual(aliases(d), [])
+                self.assertEqual(codes(x), ['alias_spacing_only'])
 
-    def test_rename_with_an_invisible_or_filler_character_is_applied_and_not_listed(self):
-        for key, new in ((B, f'납품 {ZWSP}계획'), (A, f'납품{FILLER}계획'), (B, f'납품{FILLER}계획')):
+    def test_alias_not_related_by_blanks_is_kept(self):
+        d, x, _ = reconcile(self.SRC, {'entities': [entity(B)], 'aliases': [{'alias': f'납품{ZWSP}보고', 'entity': B}]})
+        self.assertEqual((aliases(d), codes(x)), ([(f'납품{ZWSP}보고', B)], []))
+
+    def test_rename_that_adds_or_hides_a_space_beside_an_invisible_character_is_deferred(self):
+        for key, new in ((B, f'납품 {ZWSP}계획'), (A, f'납품{FILLER}계획'), (A, f'납품{ZWSP}계획'), (B, f'납품{ZWSP} 계획')):
+            with self.subTest(key=key, new=new):
+                prev = stored(self.SRC, [entity(key, quote=self.SRC)], [])
+                d, x, c = reconcile(self.SRC, {'revisions': lambda r, key=key, new=new: [revision('entities', key, entity(key), entity(key, new), r)]}, prev)
+                self.assertEqual([e['status'] for e in c], ['deferred'])
+                self.assertEqual({e['reason'] for e in c}, {SPACING_RENAME_REFUSAL})
+
+    def test_rename_that_differs_only_in_invisible_characters_is_applied_and_not_listed(self):
+        for key, new in ((B, f'납품{FILLER}계획'), (B, f'납품{ZWSP}계획'), (A, f'납품 {ZWSP}계획')):
             with self.subTest(key=key, new=new):
                 prev = stored(self.SRC, [entity(key, quote=self.SRC)], [])
                 d, x, c = reconcile(self.SRC, {'revisions': lambda r, key=key, new=new: [revision('entities', key, entity(key), entity(key, new), r)]}, prev)
                 self.assertEqual([e['status'] for e in c], ['applied'])
                 self.assertEqual(spacing_name_rows(d), [])
+
+    def test_lookup_still_needs_the_exact_spelling(self):
+        d, _, _ = reconcile(f'{A} {B}', {'entities': [entity(A, B)]})
+        self.assertEqual(candidates(graph(d), f'납품{ZWSP}계획'), [])
 
 
 class ResumedRecord(unittest.TestCase):

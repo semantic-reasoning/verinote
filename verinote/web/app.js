@@ -197,7 +197,7 @@ function renderLookupSpellingProblems(problems) {
 }
 function renderSpacingNameRows(rows) {
   if(!rows?.length)return '';
-  return `<section class="panel"><strong>ID와 원문 명칭이 띄어쓰기만 다른 개체 ${rows.length}개</strong><ul>${rows.map(r=>`<li>entities[${Number(r.index)}] ID ${visibleSpelling(r.id)} · 원문 명칭 ${visibleSpelling(r.name)}</li>`).join('')}</ul><p>조회와 질문 안내는 ID와 원문 명칭 중 어느 표기로도 이 개체를 찾으므로, 띄어쓰기만 다른 두 표기가 한 개체로 연결됩니다. 띄어쓰기는 뜻을 바꿀 수 있으니 같은 대상인지 원문과 대조하고, 다르면 내용 수정으로 ID나 원문 명칭을 고치세요. 이 목록은 승인을 막지 않습니다. 한쪽에 줄바꿈이 있는 자리, 공백 폭이나 종류만 다른 자리는 띄어쓰기 차이로 보지 않습니다. 공백이 아닌 문자(길이가 없는 문자, 빈칸처럼 보이는 한글 채움 문자 U+3164 등)는 공백으로 보지 않으므로, 이런 문자가 한쪽에만 있거나 자리가 달라 공백을 빼도 두 표기가 같지 않으면 표시하지 않습니다.</p></section>`;
+  return `<section class="panel"><strong>ID와 원문 명칭이 띄어쓰기만 다른 개체 ${rows.length}개</strong><ul>${rows.map(r=>`<li>entities[${Number(r.index)}] ID ${visibleSpelling(r.id)} · 원문 명칭 ${visibleSpelling(r.name)}</li>`).join('')}</ul><p>조회와 질문 안내는 ID와 원문 명칭 중 어느 표기로도 이 개체를 찾으므로, 띄어쓰기만 다른 두 표기가 한 개체로 연결됩니다. 띄어쓰기는 뜻을 바꿀 수 있으니 같은 대상인지 원문과 대조하고, 다르면 내용 수정으로 ID나 원문 명칭을 고치세요. 이 목록은 승인을 막지 않습니다. 한쪽에 줄바꿈이 있는 자리, 공백 폭이나 종류만 다른 자리는 띄어쓰기 차이로 보지 않습니다. 길이가 없는 문자(U+200B 등)와 빈칸처럼 보이는 한글 채움 문자(U+3164 등)는 공백 사이의 빈 자리로 보고 비교하므로, 한쪽에만 공백이 있는 자리가 있으면 이런 문자가 함께 있어도 표시합니다.</p></section>`;
 }
 function renderItem(item) {
   const p=item.payload;
@@ -570,11 +570,12 @@ document.addEventListener('click',e=>{
   if(b.dataset.history)attempt(async()=>{const rows=await api(`/api/items/${b.dataset.history}/history`);$('#history-'+b.dataset.history).innerHTML=rows.map(r=>`<div class="history-line"><strong>r${r.revision} · ${esc(r.action)}</strong> · ${esc(r.actor)}<br>${esc(r.reason)}<br><span class="muted">${esc(date(r.created_at))}</span><details><summary>당시 내용</summary><pre class="source">${esc(JSON.stringify(r.payload,null,2))}</pre></details></div>`).join('');});
 });
 function visibleSpelling(s){
-  return esc(s).replace(/[\s\u0085\p{Cf}]/gu,ch=>{
+  return esc(s).replace(/[\s\u0085\x1c-\x1f\p{Cf}\u3164\u115F\u1160\uFFA0]/gu,ch=>{
     if(ch===' ')return '<span class="ws" title="공백">␣</span>';
     if(ch==='\n')return '<span class="ws" title="줄바꿈">↵</span>';
     if(ch==='\t')return '<span class="ws" title="탭">⇥</span>';
-    return `<span class="ws" title="보이지 않는 문자">[U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}]</span>`;
+    const code=`[U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}]`;
+    return !/[\p{Cf}\u3164\u115F\u1160\uFFA0]/u.test(ch)?`<span class="ws" title="공백 문자(공백과 종류만 다름)">${code}</span>`:`<span class="ws" title="보이지 않는 문자">${code}</span>`;
   });
 }
 let termState=null,termRequest=0,termQuerySeq=0,termTimer;

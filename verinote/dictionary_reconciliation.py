@@ -1,6 +1,7 @@
 """Evidence-backed draft revisions and bounded review history; never approvals."""
 import copy
 import json
+import unicodedata
 
 from .documents import bounded_spans
 from .ontology import (
@@ -21,20 +22,30 @@ FIELDS = {'entities': {'id', 'name', 'type'}, 'aliases': {'alias', 'entity'},
           'relations': {'id', 'description', 'subject_types', 'object_types'}}
 
 
+# Hangul fillers render as blanks but are letters (Lo), so neither str.isspace nor the format category Cf covers them.
+HANGUL_FILLERS = frozenset('\u3164\u115f\u1160\uffa0')
+
+
+def blank(char):
+    """Whether `char` counts as filling a gap when refusing or listing spellings that differ in spacing: whitespace (including U+0085),
+    a zero-width or other format character (Cf), or a Hangul filler. Never used to find, suggest or link a spelling."""
+    return char.isspace() or unicodedata.category(char) == 'Cf' or char in HANGUL_FILLERS
+
+
 def compact(value):
-    return ''.join(value.split())
+    return ''.join(char for char in value if not blank(char))
 
 
 LINE_BREAKS = set('\n\r\v\f\x1c\x1d\x1e\x85  ')
 
 
 def _runs(value):
-    """The non-whitespace characters of the stripped `value`, and the whitespace run between each consecutive pair."""
+    """The characters of the stripped `value` that are not blank, and the run of blank characters between each consecutive pair."""
     chars: list[str] = []
     gaps: list[str] = []
     run = ''
     for char in value.strip():
-        if char.isspace():
+        if blank(char):
             run += char
         else:
             if chars:
@@ -45,12 +56,12 @@ def _runs(value):
 
 
 def spacing_kind(a, b):
-    """'spacing' if `a` and `b` differ only in whitespace and some position has a run on one side and none on the other.
+    """'spacing' if `a` and `b` differ only in blank characters (`blank`) and some position has a whitespace character on one side and none on the other.
 
-    'layout' if they differ only in whitespace and no position does. A position with a line break on either side is
-    layout: a line break in extracted text erases whether a space was there. A position where both sides hold a run of
-    a different width or kind is layout too. None if they are equal or differ in any other character. For refusing or
-    listing, never for linking.
+    'layout' if they differ only in blank characters and no position does. A position with a line break on either side is
+    layout: a line break in extracted text erases whether a space was there. A position where both sides hold whitespace
+    of a different width or kind, or differ only in zero-width characters, is layout too. None if they are equal or differ in
+    any other character. For refusing or listing, never for linking.
     """
     if a == b:
         return None
@@ -59,7 +70,7 @@ def spacing_kind(a, b):
     if chars_a != chars_b:
         return None
     for x, y in zip(gaps_a, gaps_b, strict=True):
-        if x != y and not LINE_BREAKS & set(x + y) and not (x and y):
+        if not LINE_BREAKS & set(x + y) and any(c.isspace() for c in x) != any(c.isspace() for c in y):
             return 'spacing'
     return 'layout'
 
