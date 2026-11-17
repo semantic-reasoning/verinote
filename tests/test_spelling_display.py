@@ -16,7 +16,7 @@ const ctx=vm.createContext({console,$:()=>({}),document:{addEventListener(){}}})
 vm.runInContext(source.match(/^const esc = .*$/m)[0],ctx);
 vm.runInContext(source.match(/^const SPELLING_KEYS=.*$/m)[0],ctx);
 vm.runInContext('const labels={pending:"검토 대기",approved:"승인",rejected:"반려",held:"보류"};function sourceLink(){return "";}function badge(){return "";}function date(v){return String(v);}function usageNumber(v){return String(v);}function bulkItemLabel(){return "";}',ctx);
-for(const name of ['visibleSpelling','spellingJSON','renderDictionaryReconciliations','renderDictionaryExclusions','judgedAlias','renderDictionary','renderLookupSpellingProblems','renderItem','renderCoverage','renderExcludedFacts','renderExcludedClaims','renderExclusionTerms','renderLossAudit','scopedRow','meaningTitleHtml','meaningStatus','meaningTitle','renderMeaning','bulkItemLabelHtml','renderRelationTypeWarnings','renderExtractionAdmission','renderSpacingNameRows'])
+for(const name of ['visibleSpelling','spellingJSON','renderDictionaryReconciliations','renderDictionaryExclusions','judgedAlias','renderDictionary','renderLookupSpellingProblems','renderQuoteSpacing','renderItem','renderCoverage','renderExcludedFacts','renderExcludedClaims','renderExclusionTerms','renderLossAudit','scopedRow','meaningTitleHtml','meaningStatus','meaningTitle','renderMeaning','bulkItemLabelHtml','renderRelationTypeWarnings','renderExtractionAdmission','renderSpacingNameRows'])
   vm.runInContext(grab(name),ctx);
 const call=(fn,...args)=>{ctx.args=args;return vm.runInContext(fn+'(...args)',ctx);};
 const NBSP='\u00a0',ZWSP='\u200b';

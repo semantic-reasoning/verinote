@@ -1,6 +1,9 @@
 """Evidence-backed draft revisions and bounded review history; never approvals."""
 import copy
+import functools
 import json
+import re
+import sys
 import unicodedata
 
 from .documents import bounded_spans
@@ -79,6 +82,216 @@ def spacing_name_rows(dictionary):
     """Entities (1-based position, ID, name) whose ID and name differ only in spacing, as `spacing_kind` defines it."""
     return [{'index': index, 'id': row['id'], 'name': row['name']} for index, row in enumerate(dictionary['entities'], 1)
             if spacing_kind(row['id'], row['name']) == 'spacing']
+
+
+MAX_FACT_STEPS = 100_000
+MAX_REQUEST_STEPS = 2_000_000
+SCAN_UNIT = 512
+LINE_BREAK_CODE = '\x01'
+MISSING_CODE = '\x00'
+
+
+class _OutOfBudget(Exception):
+    pass
+
+
+def new_request_budget():
+    """A work budget shared by every fact of one document request (see `fact_spacing_warnings`)."""
+    return {'steps': MAX_REQUEST_STEPS}
+
+
+@functools.cache
+def _blank_pattern():
+    """The compiled class of every `blank` character (str.isspace is what `\\s` matches), for C-speed `compact`."""
+    extra = ''.join(re.escape(chr(c)) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == 'Cf')
+    return re.compile(f'[\\s{extra}{re.escape("".join(HANGUL_FILLERS))}]+')
+
+
+def compact_fast(value):
+    """`compact(value)` without a Python-level loop."""
+    return _blank_pattern().sub('', value)
+
+
+def quote_layout(quote):
+    """The quote analysed once: its non-blank characters joined, where each stands, a code per gap after a character, and the code table.
+
+    A gap's code is one character per distinct whitespace run; a gap with a line break has LINE_BREAK_CODE. Equal code strings mean
+    equal gaps everywhere a line break does not hide the position, which is how `_search` skips occurrences at C speed.
+    """
+    chars, where, codes = [], [], []
+    table: dict[str, str] = {}
+    last = None
+    for index, char in enumerate(quote):
+        if blank(char):
+            continue
+        if last is not None:
+            seen = quote[last + 1:index]
+            if LINE_BREAKS & set(seen):
+                codes.append(LINE_BREAK_CODE)
+            else:
+                white = ''.join(c for c in seen if c.isspace())
+                codes.append(table.setdefault(white, chr(0x100 + len(table))))
+        chars.append(char)
+        where.append(index)
+        last = index
+    return ''.join(chars), where, ''.join(codes), table
+
+
+def _charge(state, steps, scan=False):
+    """Spend `steps` Python-level steps (or, for a C-level scan, steps are the scanned length) from the fact and the request budget."""
+    steps = steps // SCAN_UNIT + 1 if scan else steps
+    state['request']['steps'] -= steps
+    if not scan:
+        state['budget'] -= steps
+    if state['budget'] < 0 or state['request']['steps'] < 0:
+        raise _OutOfBudget
+
+
+def _gap_pattern(spelling, cache):
+    """The non-blank characters of `spelling` joined, and its gaps as (whitespace, has a line break); cached per index."""
+    if cache is not None and spelling in cache:
+        return cache[spelling]
+    chars, gaps = _runs(spelling)
+    value = (''.join(chars), [(''.join(c for c in gap if c.isspace()), bool(LINE_BREAKS & set(gap))) for gap in gaps])
+    if cache is not None:
+        cache[spelling] = value
+    return value
+
+
+def _search(spelling, quote, state, cache=None):
+    """`quote_spacing_variant` against shared `state`: dict with 'budget' (this fact's steps left), 'request' and 'layout' (the quote's, built on demand)."""
+    needle, wanted = _gap_pattern(spelling, cache)
+    _charge(state, len(spelling))
+    if not wanted:
+        return None
+    if state['layout'] is None:
+        _charge(state, len(quote))
+        state['layout'] = quote_layout(quote)
+    compact_quote, where, quote_codes, table = state['layout']
+    _charge(state, len(wanted))
+    codes = ''.join(LINE_BREAK_CODE if lb else table.get(white, MISSING_CODE) for white, lb in wanted)
+    start = compact_quote.find(needle)
+    while start >= 0:
+        _charge(state, 1)
+        seen = quote_codes[start:start + len(codes)]
+        if seen != codes:
+            _charge(state, len(codes))
+            if any(a != b and a != LINE_BREAK_CODE and b != LINE_BREAK_CODE for a, b in zip(codes, seen, strict=True)):
+                return quote[where[start]:where[start + len(needle) - 1] + 1]
+        start = compact_quote.find(needle, start + 1)
+    return None
+
+
+def quote_spacing_variant(spelling, quote):
+    """The quote passage that spells `spelling` with different spacing, or None. Display only: never used to find or link an entity.
+
+    None when `spelling` appears exactly in `quote`, or when no passage matches. Occurrences are searched in order and completely, so
+    a passage that differs only at a line break (ignored, as in #828 and `spacing_kind`) or only in invisible characters does not hide
+    a later one that differs in whitespace presence or run width. A passage counts when some gap between two characters holds
+    different whitespace on the two sides and neither side has a line break there. Gives up (None) past MAX_FACT_STEPS steps;
+    `fact_spacing_warnings` reports that as incomplete.
+    """
+    if not isinstance(spelling, str) or not isinstance(quote, str) or spelling in quote or not compact_fast(spelling):
+        return None
+    try:
+        return _search(spelling, quote, {'budget': MAX_FACT_STEPS, 'request': new_request_budget(), 'layout': None})
+    except _OutOfBudget:
+        return None
+
+
+INDEX_ROW_STEPS = 20
+OUT_OF_BUDGET = {'out of budget': True}
+
+
+def fact_endpoint_index(pin, request=None):
+    """{'ids': {entity ID: its spellings}, 'aliases': {alias: entity ID}, 'compact': {spelling: its non-blank characters}, 'gaps': {}} of an
+    extraction pin's dictionary, or None if unreadable. 'gaps' is a cache `_search` fills.
+
+    Unreadable: a row that is not a dict of strings, a spelling with no non-blank character (empty, whitespace or invisible only: it
+    would match every quote), or an alias of an unknown entity.
+
+    With a `request` budget (`new_request_budget`), the index costs INDEX_ROW_STEPS per spelling row (two per entity, one per alias),
+    checked before any work: if that does not fit, nothing is built or charged and OUT_OF_BUDGET is returned, which
+    `fact_spacing_warnings` reports as incomplete. The index is built in locals and returned whole, never half-built.
+    """
+    try:
+        entities, aliases = pin['payload']['entities'], pin['payload']['aliases']
+        if not isinstance(entities, list) or not isinstance(aliases, list):
+            return None
+        if request is not None:
+            cost = INDEX_ROW_STEPS * (2 * len(entities) + len(aliases))
+            if request['steps'] < cost:
+                return OUT_OF_BUDGET
+            request['steps'] -= cost
+        spellings, compacts = {}, {}
+        by_alias: dict[str, str] = {}
+        for row in entities:
+            if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in ('id', 'name')):
+                return None
+            spellings[row['id']] = [row['id'], row['name']]
+        for row in aliases:
+            if not isinstance(row, dict) or not all(isinstance(row.get(k), str) for k in ('alias', 'entity')) or row['entity'] not in spellings:
+                return None
+            spellings[row['entity']].append(row['alias'])
+            by_alias.setdefault(row['alias'], row['entity'])
+        for names in spellings.values():
+            for name in names:
+                if name not in compacts:
+                    compacts[name] = compact_fast(name)
+                    if not compacts[name]:
+                        return None
+        return {'ids': {k: list(dict.fromkeys(v)) for k, v in spellings.items()}, 'aliases': by_alias, 'compact': compacts, 'gaps': {}}
+    except (KeyError, TypeError):
+        return None
+
+
+def fact_spacing_warnings(payload, index, request=None):
+    """For a fact's subject and object, the spellings of that entity found in the quote only with different spacing.
+
+    `index` is `fact_endpoint_index` of the pin of the fact's run; None (no readable pin) gives no warnings and 'available' false, and
+    OUT_OF_BUDGET (the index did not fit the request budget) gives none and 'incomplete' true.
+    An endpoint is found by its exact ID or alias; one with an exact spelling in the quote gives no warning. A spelling whose
+    non-blank characters are not in the quote's is skipped by a C-level test. Occurrences of the rest are compared by gap codes at
+    C speed and searched completely.
+
+    Work is bounded twice: MAX_FACT_STEPS Python-level steps for this fact, and `request` (a `new_request_budget`, shared by the facts
+    of one request; fresh if omitted) of MAX_REQUEST_STEPS, which also charges each C-level scan one step per SCAN_UNIT characters
+    of quote plus one. Past either bound the warnings found so far are returned with 'incomplete' true, and so is every later
+    fact of a spent request.
+    """
+    unavailable = {'available': False, 'warnings': []}
+    if index is OUT_OF_BUDGET:
+        return {'available': True, 'incomplete': True, 'warnings': []}
+    if index is None or not isinstance(payload, dict):
+        return unavailable
+    quote, warnings = payload.get('quote'), []
+    state = {'budget': MAX_FACT_STEPS, 'request': request if request is not None else new_request_budget(), 'layout': None}
+    incomplete, searched = False, {}
+    try:
+        if isinstance(quote, str):
+            _charge(state, len(quote), scan=True)
+            compact_quote = compact_fast(quote)
+            for field in ('subject', 'object'):
+                value = payload.get(field)
+                entity = value if value in index['ids'] else index['aliases'].get(value)
+                spellings = index['ids'].get(entity, [])
+                _charge(state, len(quote) * len(spellings), scan=True)
+                if any(s in quote for s in spellings):
+                    continue
+                _charge(state, len(quote) * len(spellings), scan=True)
+                for spelling in spellings:
+                    if index['compact'][spelling] not in compact_quote:
+                        continue
+                    if spelling not in searched:
+                        searched[spelling] = _search(spelling, quote, state, index['gaps'])
+                    found = searched[spelling]
+                    if found is not None:
+                        warnings.append({'field': field, 'entity': entity, 'spelling': spelling, 'found': found})
+    except _OutOfBudget:
+        incomplete = True
+    except TypeError:
+        return unavailable
+    return {'available': True, 'incomplete': incomplete, 'warnings': warnings}
 
 
 def spacing_link(spelling, target):
