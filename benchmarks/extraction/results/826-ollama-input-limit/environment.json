@@ -1,0 +1,27 @@
+{
+  "model": "qwen2.5:7b",
+  "model_digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+  "ollama_version": "0.40.16",
+  "num_ctx": 32768,
+  "num_predict": 4096,
+  "temperature": 0,
+  "product_input_byte_limit": 27648,
+  "sizes": [
+    8192,
+    27648,
+    40960,
+    81920,
+    122880
+  ],
+  "kinds": [
+    "korean",
+    "ascii"
+  ],
+  "stages": [
+    "extract",
+    "dictionary"
+  ],
+  "extraction_contract_version": 3,
+  "format": "json",
+  "keep_alive": "5m"
+}

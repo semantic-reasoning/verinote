@@ -1,0 +1,28 @@
+{
+ "number": 7,
+ "stage": "extract",
+ "kind": "ascii",
+ "target_bytes": 27648,
+ "text_chars": 22014,
+ "prompt_bytes": 27648,
+ "prompt_chars": 25432,
+ "marker": "END-cd2ec00643",
+ "prompt_sha256": "633bfd46395b4e3732cfeb1f92851ccf09c7813ede04b93689790322f545e054",
+ "seconds": 43.04,
+ "prompt_eval_count": 6488,
+ "eval_count": 975,
+ "done": true,
+ "done_reason": "stop",
+ "response_json_valid": true,
+ "end_marker_echoed": true,
+ "response_keys": [
+  "claims",
+  "coverage",
+  "dictionary_gaps",
+  "end_marker",
+  "facts",
+  "title"
+ ],
+ "tokens_per_byte": 0.2347,
+ "fits_num_ctx_minus_num_predict": true
+}

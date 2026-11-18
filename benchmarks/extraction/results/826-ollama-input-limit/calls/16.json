@@ -1,0 +1,26 @@
+{
+ "number": 16,
+ "stage": "dictionary",
+ "kind": "ascii",
+ "target_bytes": 8192,
+ "text_chars": 764,
+ "prompt_bytes": 8191,
+ "prompt_chars": 4786,
+ "marker": "END-6bf5fa01f2",
+ "prompt_sha256": "8cf525e9ffea9fc169bdf9414a8c071e2c8c839fbc04828a8adc30e9ac475c54",
+ "seconds": 19.37,
+ "prompt_eval_count": 2227,
+ "eval_count": 437,
+ "done": true,
+ "done_reason": "stop",
+ "response_json_valid": true,
+ "end_marker_echoed": true,
+ "response_keys": [
+  "aliases",
+  "end_marker",
+  "entities",
+  "relations"
+ ],
+ "tokens_per_byte": 0.2719,
+ "fits_num_ctx_minus_num_predict": true
+}

@@ -1,0 +1,162 @@
+[
+ {
+  "number": 1,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2722,
+  "prompt_eval_count": 2230
+ },
+ {
+  "number": 2,
+  "top_level_schema_keys_present": null,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2781,
+  "prompt_eval_count": 7687
+ },
+ {
+  "number": 3,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2766,
+  "prompt_eval_count": 11329
+ },
+ {
+  "number": 4,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2769,
+  "prompt_eval_count": 22685
+ },
+ {
+  "number": 5,
+  "top_level_schema_keys_present": null,
+  "product_validation": "not evaluated",
+  "fits_budget": false,
+  "tokens_per_byte_used_for_ratio": null,
+  "prompt_eval_count": 31758
+ },
+ {
+  "number": 6,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2493,
+  "prompt_eval_count": 2042
+ },
+ {
+  "number": 7,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2347,
+  "prompt_eval_count": 6488
+ },
+ {
+  "number": 8,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2341,
+  "prompt_eval_count": 9588
+ },
+ {
+  "number": 9,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2255,
+  "prompt_eval_count": 18472
+ },
+ {
+  "number": 10,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": null,
+  "prompt_eval_count": 26986
+ },
+ {
+  "number": 11,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2664,
+  "prompt_eval_count": 2182
+ },
+ {
+  "number": 12,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.3323,
+  "prompt_eval_count": 9188
+ },
+ {
+  "number": 13,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.337,
+  "prompt_eval_count": 13802
+ },
+ {
+  "number": 14,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.3397,
+  "prompt_eval_count": 27831
+ },
+ {
+  "number": 15,
+  "top_level_schema_keys_present": false,
+  "product_validation": "not evaluated",
+  "fits_budget": null,
+  "tokens_per_byte_used_for_ratio": null,
+  "prompt_eval_count": 16386
+ },
+ {
+  "number": 16,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.2719,
+  "prompt_eval_count": 2227
+ },
+ {
+  "number": 17,
+  "top_level_schema_keys_present": null,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.359,
+  "prompt_eval_count": 9918
+ },
+ {
+  "number": 18,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": true,
+  "tokens_per_byte_used_for_ratio": 0.3479,
+  "prompt_eval_count": 14250
+ },
+ {
+  "number": 19,
+  "top_level_schema_keys_present": true,
+  "product_validation": "not evaluated",
+  "fits_budget": false,
+  "tokens_per_byte_used_for_ratio": 0.3765,
+  "prompt_eval_count": 30844
+ },
+ {
+  "number": 20,
+  "top_level_schema_keys_present": false,
+  "product_validation": "not evaluated",
+  "fits_budget": null,
+  "tokens_per_byte_used_for_ratio": null,
+  "prompt_eval_count": 16386
+ }
+]

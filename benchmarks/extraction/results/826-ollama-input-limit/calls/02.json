@@ -1,0 +1,21 @@
+{
+ "number": 2,
+ "stage": "extract",
+ "kind": "korean",
+ "target_bytes": 27648,
+ "text_chars": 12500,
+ "prompt_bytes": 27646,
+ "prompt_chars": 15337,
+ "marker": "END-a5eff60842",
+ "prompt_sha256": "7b63f8806876e09e02da02ec9aac4d801e86e4163c67f891726246a9d4bb629c",
+ "seconds": 163.09,
+ "prompt_eval_count": 7687,
+ "eval_count": 4096,
+ "done": true,
+ "done_reason": "length",
+ "response_json_valid": false,
+ "end_marker_echoed": null,
+ "response_keys": null,
+ "tokens_per_byte": 0.2781,
+ "fits_num_ctx_minus_num_predict": true
+}

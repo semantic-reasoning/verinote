@@ -1,0 +1,26 @@
+{
+ "number": 13,
+ "stage": "dictionary",
+ "kind": "korean",
+ "target_bytes": 40960,
+ "text_chars": 14642,
+ "prompt_bytes": 40959,
+ "prompt_chars": 25363,
+ "marker": "END-47a30adc32",
+ "prompt_sha256": "7082c3fda2bcc217aa890d0321f7ce28c99cbdddd4df8c792a513fe0aa46d01d",
+ "seconds": 78.49,
+ "prompt_eval_count": 13802,
+ "eval_count": 1195,
+ "done": true,
+ "done_reason": "stop",
+ "response_json_valid": true,
+ "end_marker_echoed": true,
+ "response_keys": [
+  "aliases",
+  "end_marker",
+  "entities",
+  "relations"
+ ],
+ "tokens_per_byte": 0.337,
+ "fits_num_ctx_minus_num_predict": true
+}
