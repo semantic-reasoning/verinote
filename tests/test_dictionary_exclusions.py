@@ -246,14 +246,14 @@ class Generation(unittest.TestCase):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
         first, _ = self.run_job(doc, [bad_name, TimeoutError('fixture')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())
-        saved['contract']['filter_policy'] = 5
+        saved['contract']['filter_policy'] = 5; saved['schema_version'] = 3; saved.pop('merged_names'); saved.pop('merged_count')
         path.write_text(json.dumps(saved)); before = path.read_bytes()
         second, calls = self.run_job(doc, [DICTIONARY])
         self.assertEqual(second['status'], 'success', second['detail'])
         self.assertEqual([r['offset'] for r in calls], [4000])
         self.assertEqual(path.read_bytes(), before)
         new = json.loads(self.checkpoint(second).read_text())
-        self.assertEqual(new['contract']['filter_policy'], 6)
+        self.assertEqual(new['contract']['filter_policy'], 7)
         self.assertEqual(new['resumed_from'], first['id'])
         self.assertEqual(read_report(self.root, self.store, second['id'])['total_count'], 1)
 
@@ -263,7 +263,7 @@ class Generation(unittest.TestCase):
                 doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
                 first, _ = self.run_job(doc, [bad_name, TimeoutError('fixture')])
                 path = self.checkpoint(first); saved = json.loads(path.read_text())
-                saved['contract']['filter_policy'] = 5
+                saved['contract']['filter_policy'] = 5; saved['schema_version'] = 3; saved.pop('merged_names'); saved.pop('merged_count')
                 if change == 'identity': saved['contract']['document_id'] = 'wrong'
                 elif change == 'report': saved['exclusions']['items'].clear()
                 elif change == 'reconciliation': saved['reconciliations']['identity']['version'] = 99
@@ -315,7 +315,7 @@ class Generation(unittest.TestCase):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
         first, _ = self.run_job(doc, [DICTIONARY, TimeoutError('fixture timeout')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())
-        saved['schema_version'] = 1; saved.pop('exclusions'); saved.pop('reconciliations'); saved['contract'].pop('filter_policy'); saved['contract'].pop('reconciliation_policy')
+        saved['schema_version'] = 1; saved.pop('exclusions'); saved.pop('reconciliations'); saved.pop('merged_names'); saved.pop('merged_count'); saved['contract'].pop('filter_policy'); saved['contract'].pop('reconciliation_policy')
         path.write_text(json.dumps(saved))
         second, calls = self.run_job(doc, [DICTIONARY])
         self.assertEqual(second['status'], 'success', second['detail'])

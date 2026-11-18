@@ -75,6 +75,8 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     dictionary: dict[str, list[object]] = {kind: [] for kind in LIMITS}
     exclusions = new_report(run, doc)
     reconciliations = reconciliation.new_report(run, doc)
+    merged_names: list[dict] = []
+    merged_count = 0
     accepted, resumed_from, warnings = 0, None, []
     skipped = 0
     option_mismatches = 0
@@ -83,10 +85,12 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
         try:
             value = json.loads(raw) if raw else None
             fields = {'schema_version', 'run_id', 'contract', 'offset', 'dictionary', 'resumed_from'}
-            if isinstance(value, dict) and value.get('schema_version') in (2, 3):
+            if isinstance(value, dict) and value.get('schema_version') in (2, 3, 4):
                 fields.add('exclusions')
-            if isinstance(value, dict) and value.get('schema_version') == 3:
+            if isinstance(value, dict) and value.get('schema_version') in (3, 4):
                 fields.add('reconciliations')
+            if isinstance(value, dict) and value.get('schema_version') == 4:
+                fields.update(('merged_names', 'merged_count'))
             if not isinstance(value, dict) or set(value) != fields:
                 raise ValueError('checkpoint shape')
             if run['agent'] in ('openrouter', 'ollama') and isinstance(value['contract'], dict) and value['contract'].get('execution_options') != contract['execution_options']:
@@ -107,17 +111,17 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             if (value['schema_version'] in (1, 2) and isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
                     and value['contract']['filter_policy'] in SUPPORTED_FILTER_POLICIES):
                 expected['filter_policy'] = value['contract']['filter_policy']  # Revalidate known older prefixes.
-            # Policy 6 only adds audited exclusion of rows missing quote_ref.
-            # A validated policy-5 prefix remains valid; older schema-3 policies do not.
+            # Policy 7 only adds refusal of spacing-only ties with merged names, which a checkpoint of schema 3 cannot
+            # record; it stays reusable (policies 5 and 6, as before) only when its report shows no applied change.
             if (value['schema_version'] == 3 and isinstance(value['contract'], dict)
-                    and type(value['contract'].get('filter_policy')) is int and value['contract']['filter_policy'] == 5):
-                expected['filter_policy'] = 5
+                    and type(value['contract'].get('filter_policy')) is int and value['contract']['filter_policy'] in (5, 6)):
+                expected['filter_policy'] = value['contract']['filter_policy']
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
-            if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
+            if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3, 4) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
                 raise ValueError('checkpoint identity/boundary')
             candidate_dictionary = validate_dictionary(value['dictionary'], source[:offset])
-            if value['schema_version'] in (2, 3):
+            if value['schema_version'] in (2, 3, 4):
                 candidate_exclusions = validate_report(value['exclusions'], prior, doc, offset, filter_policy=value['contract']['filter_policy'])
                 candidate_exclusions['identity'] = identity(run, doc)
             else:
@@ -126,7 +130,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                     if start >= offset:
                         break
                     candidate_exclusions = add_chunk(candidate_exclusions, start, len(chunk), [])
-            if value['schema_version'] == 3:
+            if value['schema_version'] in (3, 4):
                 candidate_reconciliations = reconciliation.validate_report(value['reconciliations'], prior, doc, offset)
                 candidate_reconciliations['identity'] = reconciliation.identity(run, doc)
             else:
@@ -135,7 +139,16 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                     if start >= offset: break
                     candidate_reconciliations = reconciliation.add_chunk(candidate_reconciliations, start, len(chunk), [])
                 candidate_reconciliations['legacy_chars'] = offset
-            dictionary, exclusions, reconciliations = candidate_dictionary, candidate_exclusions, candidate_reconciliations
+            # Schemas 1 and 2 predate name merging. A schema-3 report with an applied change may have merged names it did not keep.
+            if value['schema_version'] == 4:
+                candidate_merged = reconciliation.validate_merged_names(value['merged_names'], value['merged_count'], candidate_dictionary, source,
+                                                                        candidate_reconciliations, offset)
+            elif any(row['applied'] for row in candidate_reconciliations['chunks']):
+                raise ValueError('checkpoint lacks merged names')
+            else:
+                candidate_merged = []
+            dictionary, exclusions, reconciliations, merged_names = candidate_dictionary, candidate_exclusions, candidate_reconciliations, candidate_merged
+            merged_count = len(candidate_merged)
             accepted, resumed_from = offset, prior['id']
             break
         except (ValueError, TypeError, KeyError, UnicodeError):
@@ -158,14 +171,16 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 warnings.append(warning)
             return False
 
-    def checkpoint(candidate, candidate_exclusions, candidate_reconciliations, offset):
+    def checkpoint(candidate, candidate_exclusions, candidate_reconciliations, candidate_merged, candidate_count, offset):
         if not offset:
             return
         validate_report(candidate_exclusions, run, doc, offset)
         reconciliation.validate_report(candidate_reconciliations, run, doc, offset)
-        value = {'schema_version': 3, 'run_id': run['id'], 'contract': contract, 'offset': offset,
+        value = {'schema_version': 4, 'run_id': run['id'], 'contract': contract, 'offset': offset,
                  'dictionary': candidate, 'resumed_from': resumed_from, 'exclusions': candidate_exclusions,
-                 'reconciliations': candidate_reconciliations}
+                 'reconciliations': candidate_reconciliations, 'merged_names': candidate_merged, 'merged_count': candidate_count}
+        if len(json.dumps(candidate_merged, ensure_ascii=False).encode()) > reconciliation.MAX_MERGED_NAMES_BYTES:
+            raise ValueError('통합된 이름 기록 크기 제한 초과')
         if len(json.dumps(value, ensure_ascii=False).encode()) > CHECKPOINT_LIMIT:
             raise ValueError('사전 조정·복구 기록 크기 제한 초과')
         try:
@@ -197,7 +212,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     save_exclusions()
     write(folder / 'dictionary-progress.json', state)
     try:
-        checkpoint(dictionary, exclusions, reconciliations, accepted)
+        checkpoint(dictionary, exclusions, reconciliations, merged_names, merged_count, accepted)
         for index, (offset, chunk) in enumerate(slices, 1):
             if offset < accepted:
                 continue
@@ -217,15 +232,24 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             try:
                 output = cli.complete(run['agent'], run['model'], prompt, folder / str(index), phase='ontology')
                 with caller_validation(cli, folder / str(index), run['agent']) as validation:
-                    merged, excluded, changes = reconcile_generated_dictionary(dictionary, output, spans, source[:offset + len(chunk)], chunk)
+                    fresh: list[dict] = []
+                    merged, excluded, changes = reconcile_generated_dictionary(dictionary, output, spans, source[:offset + len(chunk)], chunk,
+                                                                               merged_names=merged_names, new_merged=fresh)
                     if excluded or any(row['status'] == 'deferred' for row in changes):
                         validation.reject()
                     next_exclusions = add_chunk(exclusions, offset, len(chunk), excluded)
                     next_reconciliations = reconciliation.add_chunk(reconciliations, offset, len(chunk), changes)
-                    checkpoint(merged, next_exclusions, next_reconciliations, offset + len(chunk))
+                    next_merged = merged_names + fresh
+                    # Counted from the applied merge events, apart from the rows they produced.
+                    next_count = merged_count + sum(row['origin'] == 'canonicalization' and row['kind'] == 'entities' and row['status'] == 'applied'
+                                                    for row in changes)
+                    if next_count != len(next_merged):
+                        raise ValueError('통합된 이름 기록 불일치')
+                    checkpoint(merged, next_exclusions, next_reconciliations, next_merged, next_count, offset + len(chunk))
             except Exception as exc:
                 raise ValueError(f'사전 구간 {index}/{len(slices)} · {error_text(exc)}') from exc
             dictionary, accepted = merged, offset + len(chunk)
+            merged_names, merged_count = next_merged, next_count
             exclusions = next_exclusions
             reconciliations = next_reconciliations
             state['completed_chars'] = accepted

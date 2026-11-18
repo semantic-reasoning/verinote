@@ -180,7 +180,7 @@ class Pipeline(unittest.TestCase):
     def test_v1_3989_prefix_resumes_and_saves_current_audit_without_extra_calls(self):
         doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text()); saved['contract']['filter_policy'] = 1
-        saved['schema_version'] = 2; saved.pop('reconciliations'); saved['contract'].pop('reconciliation_policy')
+        saved['schema_version'] = 2; saved.pop('reconciliations'); saved.pop('merged_names'); saved.pop('merged_count'); saved['contract'].pop('reconciliation_policy')
         path.write_text(json.dumps(saved))
         (path.parent / 'dictionary-exclusions.json').unlink()
         self.assertTrue(read_report(self.root, self.store, first['id'])['partial'])
@@ -198,7 +198,7 @@ class Pipeline(unittest.TestCase):
         doc = self.new_doc()
         first, _ = self.execute(doc, ['alias_initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())
-        saved['contract']['filter_policy'] = 2; saved['schema_version'] = 2; saved.pop('reconciliations'); saved['contract'].pop('reconciliation_policy'); path.write_text(json.dumps(saved))
+        saved['contract']['filter_policy'] = 2; saved['schema_version'] = 2; saved.pop('reconciliations'); saved.pop('merged_names'); saved.pop('merged_count'); saved['contract'].pop('reconciliation_policy'); path.write_text(json.dumps(saved))
         second, calls = self.execute(doc, ['alias_changed', ValueError('stop')])
         self.assertEqual(calls, [3989, 7978])
         self.assertEqual(second['status'], 'error')
@@ -227,7 +227,7 @@ class Pipeline(unittest.TestCase):
 
     def test_policy_4_schema_3_prefix_is_discarded_and_recalled_from_zero(self):
         doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
-        path = self.checkpoint(first); saved = json.loads(path.read_text()); self.assertEqual(saved['schema_version'], 3)
+        path = self.checkpoint(first); saved = json.loads(path.read_text()); self.assertEqual(saved['schema_version'], 4)
         saved['contract']['filter_policy'] = 4; path.write_text(json.dumps(saved))
         second, calls = self.execute(doc, ['initial', 'empty', 'empty'])
         self.assertEqual(second['status'], 'success', second['detail']); self.assertEqual(calls, [0, 3989, 7978])

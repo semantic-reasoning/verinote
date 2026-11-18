@@ -312,11 +312,79 @@ def name_link(name, target):
     return name != target['name'] and spacing_link(name, target)
 
 
-def spacing_conflict(alias, entity_id, entities, aliases):
-    """Whether a model alias would tie spellings that differ only in whitespace: to its target, by demoting a same-spelled entity, or to a sibling alias."""
+MAX_MERGED_NAMES_BYTES = 2 * 1024 * 1024
+
+
+@functools.lru_cache(maxsize=65536)
+def _compact(value):
+    return compact(value)
+
+
+def merged_row(name, carrier, chunk, chunk_offset, quote):
+    """Provenance of a name merged away: the name, the alias that carries it now (the merged entity's ID) and where the name
+    stands in the source. Held in the run checkpoint only, never sent to the model, never a way to find or link a spelling."""
+    return {'name': name, 'carrier': carrier, 'offset': chunk_offset + chunk.index(quote) + quote.index(name)}
+
+
+def merged_name_ties(dictionary, merged):
+    """(merged name, spelling, entity) triples where the name, held by the entity its carrier alias points at now, differs only in
+    whitespace from another spelling that entity holds, which may be another merged name. A tie moved onto another entity is a new triple."""
+    owner = {row['alias']: row['entity'] for row in dictionary['aliases']}
+    if not merged:
+        return set()
+    held: dict[str, set[str]] = {}
+    for row in dictionary['entities']:
+        held.setdefault(row['id'], set()).update((row['id'], row['name']))
+    for row in dictionary['aliases']:
+        held.setdefault(row['entity'], set()).add(row['alias'])
+    # A name its entity still spells exactly is not lost; its ties belong to the dictionary itself.
+    placed = [(row['name'], row['carrier'], owner[row['carrier']]) for row in merged
+              if row['carrier'] in owner and row['name'] not in held.get(owner[row['carrier']], ())]
+    for name, _, entity_id in placed:
+        held.setdefault(entity_id, set()).add(name)
+    # Spellings indexed by entity and compact form: one lookup per merged name instead of a scan of every spelling.
+    index: dict[tuple[str, str], set[str]] = {}
+    for entity_id, spellings in held.items():
+        for spelling in spellings:
+            index.setdefault((entity_id, _compact(spelling)), set()).add(spelling)
+    # The merged entity's own ID against its own name is the entity row itself, never a new tie.
+    return {(name, spelling, entity_id) for name, carrier, entity_id in placed
+            for spelling in index[(entity_id, _compact(name))] if spelling not in (name, carrier)}
+
+
+def validate_merged_names(rows, count, dictionary, source, report, accepted):
+    """The provenance a checkpoint holds, checked against its own dictionary, source prefix and reconciliation report.
+
+    `count` is the number of merges the run applied, kept apart from the rows, and must equal their number. Every row needs its
+    carrier alias still in the dictionary (its current quote may differ after the alias moved) and the name at its source offset in a
+    chunk that reports an applied change; a report without applied changes allows no rows. Returns a copy. Raises ValueError otherwise."""
+    if (not isinstance(rows, list) or type(count) is not int or count != len(rows)
+            or len(json.dumps(rows, ensure_ascii=False).encode()) > MAX_MERGED_NAMES_BYTES):
+        raise ValueError('통합된 이름 기록 오류')
+    quotes = {row['alias'] for row in dictionary['aliases']}
+    applied = [(c['offset'], c['offset'] + c['length']) for c in report['chunks'] if c['applied']]
+    carriers = set()
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'name', 'carrier', 'offset'} or not isinstance(row['name'], str)
+                or not row['name'] or not isinstance(row['carrier'], str) or type(row['offset']) is not int):
+            raise ValueError('통합된 이름 기록 형식 오류')
+        name, carrier, offset = row['name'], row['carrier'], row['offset']
+        if (carrier in carriers or carrier not in quotes or offset < 0
+                or offset + len(name) > accepted or source[offset:offset + len(name)] != name
+                or not any(start <= offset < end for start, end in applied)):
+            raise ValueError('통합된 이름 기록 근거 오류')
+        carriers.add(carrier)
+    return copy.deepcopy(rows)
+
+
+def spacing_conflict(alias, entity_id, entities, aliases, merged=()):
+    """Whether a model alias would tie spellings that differ only in whitespace: to its target, by demoting a same-spelled entity, to a sibling alias,
+    or to a name merged into the target earlier (`merged_row`)."""
     target = entities[entity_id]
     demoted = entities.get(alias)
+    carriers = {row['alias'] for row in aliases if row['entity'] == entity_id} if merged else ()
     return (spacing_link(alias, target) or (demoted is not None and name_link(demoted['name'], target))
+            or any(row['carrier'] in carriers and row['name'] != alias and _compact(row['name']) == _compact(alias) for row in merged)
             or (alias not in (target['id'], target['name'])
                 and any(row['entity'] == entity_id and row['alias'] != alias and compact(row['alias']) == compact(alias) for row in aliases)))
 
@@ -387,7 +455,7 @@ def parse_revisions(rows, spans):
     return result
 
 
-def revise(previous, baseline, proposals, source, blocked_keys=()):
+def revise(previous, baseline, proposals, source, blocked_keys=(), merged=()):
     if not proposals:
         return baseline, []
     candidate = copy.deepcopy(baseline)
@@ -415,7 +483,8 @@ def revise(previous, baseline, proposals, source, blocked_keys=()):
         except ValueError:
             failure = '변경한 이름·타입·별칭의 근거 또는 의존 정의가 맞지 않아 조정 묶음을 보류했습니다.'
         else:
-            if spacing_conflicts(candidate) - spacing_conflicts(baseline):
+            if (spacing_conflicts(candidate) - spacing_conflicts(baseline)
+                    or merged_name_ties(candidate, merged) - merged_name_ties(baseline, merged)):
                 failure = SPACING_REFUSAL
             elif ({(r['id'], r['name']) for r in spacing_name_rows(candidate)}
                   - {(r['id'], r['name']) for r in spacing_name_rows(baseline)}):
@@ -428,10 +497,13 @@ def revise(previous, baseline, proposals, source, blocked_keys=()):
     return (baseline if failure else candidate), events
 
 
-def canonicalize(dictionary, proposals, source, revised_keys=()):
-    """Only explicit grounded same-type entity-ID aliases can demote entities."""
+def canonicalize(dictionary, proposals, source, revised_keys=(), *, chunk='', chunk_offset=0, merged=(), new_merged=None):
+    """Only explicit grounded same-type entity-ID aliases can demote entities.
+
+    `merged` is the provenance of names merged earlier; each applied merge appends its own to `new_merged` and counts for later ones."""
     result = dictionary
     events = []
+    known = list(merged)
     pending = {r['alias']: r for r in proposals}
     while pending:
         component = {min(pending)}
@@ -477,7 +549,9 @@ def canonicalize(dictionary, proposals, source, revised_keys=()):
             except ValueError:
                 failure = '기존 별칭·관계의 근거 또는 의존 정의가 유지되지 않아 통합을 보류했습니다.'
             else:
-                if spacing_conflicts(candidate) - spacing_conflicts(result) or demoted_name_tie(redirects, entities, candidate):
+                fresh = [merged_row(entities[r['alias']]['name'], r['alias'], chunk, chunk_offset, r['quote']) for r in rows]
+                if (spacing_conflicts(candidate) - spacing_conflicts(result) or demoted_name_tie(redirects, entities, candidate)
+                        or merged_name_ties(candidate, known + fresh) - merged_name_ties(result, known)):
                     failure = SPACING_REFUSAL
         for row in rows:
             events.append(event('entities', row['alias'], entities[row['alias']],
@@ -485,6 +559,9 @@ def canonicalize(dictionary, proposals, source, revised_keys=()):
                                 failure or '원문의 명시적 별칭 제안에 따라 중복 개체를 정규 개체의 별칭으로 통합했습니다.', 'canonicalization'))
         if failure is None:
             result = candidate; events.extend(dependent_events)
+            known.extend(fresh)
+            if new_merged is not None:
+                new_merged.extend(fresh)
     return result, events
 
 
@@ -587,7 +664,7 @@ def read_report(root, store, run_id, *, document_id=None, version=None, include_
         if row is None: return unavailable
         raw = safe_file(root, f'runs/{run_id}/dictionary-checkpoint.json', CHECKPOINT_LIMIT)
         saved = json.loads(raw) if raw else None
-        if (not isinstance(saved, dict) or saved.get('schema_version') != 3 or saved.get('run_id') != run_id
+        if (not isinstance(saved, dict) or saved.get('schema_version') not in (3, 4) or saved.get('run_id') != run_id
                 or type(saved.get('offset')) is not int or not isinstance(saved.get('contract'), dict)
                 or type(saved['contract'].get('reconciliation_policy')) is not int
                 or saved['contract']['reconciliation_policy'] != POLICY):

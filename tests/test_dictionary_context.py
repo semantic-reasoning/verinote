@@ -221,6 +221,7 @@ class Generation(unittest.TestCase):
         checkpoint = json.loads(self.checkpoint(failed).read_text())
         self.assertEqual(checkpoint['offset'], 20000)
         checkpoint['contract']['prompt'] = PREVIOUS_CONTEXT_PROMPT
+        checkpoint['schema_version'] = 3; checkpoint.pop('merged_names'); checkpoint.pop('merged_count'); checkpoint['contract']['filter_policy'] = 6
         self.checkpoint(failed).write_text(json.dumps(checkpoint))
         original_record = self.checkpoint(failed).read_bytes()
         retried, calls = self.run_job(doc, [deltas[5], EMPTY])

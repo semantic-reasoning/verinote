@@ -163,7 +163,7 @@ def read_report(root, store, run_id, *, document_id=None, version=None, include_
         raw = safe_file(root, f'runs/{run_id}/dictionary-checkpoint.json', CHECKPOINT_LIMIT)
         checkpoint = json.loads(raw) if raw else None
         if (not isinstance(checkpoint, dict) or checkpoint.get('run_id') != run_id
-                or type(checkpoint.get('schema_version')) is not int or checkpoint['schema_version'] not in (2, 3)
+                or type(checkpoint.get('schema_version')) is not int or checkpoint['schema_version'] not in (2, 3, 4)
                 or type(checkpoint.get('offset')) is not int
                 or not isinstance(checkpoint.get('contract'), dict)
                 or type(checkpoint['contract'].get('filter_policy')) is not int
