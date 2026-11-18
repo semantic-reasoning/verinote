@@ -481,6 +481,20 @@ class Store:
         with self.connect() as db:
             return [dict(r) for r in db.execute('SELECT d.*,v.filename,v.sha256,v.created_at,(SELECT COUNT(*) FROM versions WHERE document_id=d.id) AS version_count FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY v.created_at DESC')]
 
+    def search_documents(self, needle):
+        """Documents whose title and current text contain the already-trimmed query, lowercased only."""
+        needle = needle.lower()
+        with self.connect() as db:
+            rows = db.execute('SELECT d.*,v.filename,v.sha256,v.created_at,v.text AS source_text,(SELECT COUNT(*) FROM versions WHERE document_id=d.id) AS version_count FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version')
+            found = []
+            for r in rows:
+                if needle in (r['title'] + ' ' + r['source_text']).lower():
+                    row = dict(r)
+                    del row['source_text']
+                    found.append(row)
+        found.sort(key=lambda r: r['created_at'], reverse=True)
+        return found
+
     def document(self, document_id, version=None):
         with self.connect() as db:
             doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()

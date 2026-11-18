@@ -192,6 +192,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.save_usage_rates(self.body()))
             if route.path == '/api/usage' and method == 'GET':
                 return self.send(self.server.service.usage_report())
+            if route.path == '/api/documents/search' and method == 'POST':
+                query = self.body().get('search')
+                if not isinstance(query, str):
+                    raise ValueError('검색어는 문자열이어야 합니다.')
+                return self.send(store.search_documents(query))
             if route.path == '/api/documents':
                 if method == 'GET':
                     return self.send(store.documents())
