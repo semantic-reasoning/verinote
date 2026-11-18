@@ -39,7 +39,7 @@ MAY_DIFFER = '입력 예산은 에이전트에 따라 다르므로(앱 정책 �
 ALL_REFUSE = '어느 에이전트의 입력 예산도 앱 정책 120,000바이트를 넘지 않으므로 다른 에이전트로도 거부됩니다.'
 OTHER = '입력 예산이 120,000바이트인 다른 에이전트로 추출(원문과 사전이 해당 제공자에게 전달됨)'
 UNSAVED = (' 이 경고의 기록을 저장하지 못했습니다. 문서 화면은 현재 문서 버전의 반려되지 않은 사전이면 이 기록 없이 다시 계산하며, '
-           '반려된 사전이나 이전 문서 버전에서는 이 경고를 표시하지 않습니다.')
+           '반려된 사전이나 이전 문서 버전의 사전 화면에는 입력 한도 경고를 표시하지 않습니다(이 실행 상세에는 남습니다).')
 SPLIT = '문서를 나누어 각각 사전 생성·승인(이 사전은 재사용되지 않음, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함)'
 
 
@@ -509,18 +509,17 @@ class Recomputed(Case):
         with mock.patch.object(dc, 'current_admission', side_effect=RuntimeError('x')):
             self.assertEqual(self.admission(get, doc), {'available': False, 'recomputed': True})
 
-    def test_rejected_and_earlier_version_items_keep_the_generation_record(self):
+    def test_rejected_and_earlier_version_dictionaries_show_no_panel_but_the_current_one_does(self):
         doc, run, _ = self.generate(SRC, R - 1)
-        recorded = {'available': True, 'warning': self.record(run)['warning']}
-        get = self.serve()  # 120,000 bytes: a recomputation would show no warning
+        get = self.serve(Stub(generated, R - 1))
+        self.assertTrue(self.admission(get, doc)['warning'])
         item = self.item(doc)
         self.store.review(item['id'], item['revision'], 'rejected', 'R', 'no')
-        self.assertEqual(self.admission(get, doc), recorded)
-        with mock.patch.object(dc, 'PROTOCOL', dc.PROTOCOL + 'x'):
-            self.assertIsNone(self.admission(get, doc))
+        self.assertIsNone(self.admission(get, doc))
         doc, run, _ = self.generate(SRC, R - 1)
+        self.assertTrue(self.admission(get, doc)['warning'])
         self.store.register('d', 'd.md', b'v2', 'v2', doc['id'], doc['version'], doc['generation'])
-        self.assertEqual(self.admission(get, doc, '?version=1'), {'available': True, 'warning': self.record(run)['warning']})
+        self.assertIsNone(self.admission(get, doc, '?version=1'))
 
     def test_create_run_pins_through_extraction_pin_with_its_own_contract_binding(self):
         import verinote.store as store_module
