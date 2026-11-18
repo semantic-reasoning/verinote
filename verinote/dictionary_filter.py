@@ -6,8 +6,8 @@ from .ontology import (
     validate_dictionary,
 )
 
-FILTER_POLICY = 6
-SUPPORTED_FILTER_POLICIES = (1, 2, 3, 4, 5, FILTER_POLICY)
+FILTER_POLICY = 7
+SUPPORTED_FILTER_POLICIES = (1, 2, 3, 4, 5, 6, FILTER_POLICY)
 REASONS = {
     'definition_conflict': '충돌 제안을 조정 검토 내역에 보류했습니다. 기존 정의가 옳다고 확정한 것은 아닙니다.',
     'entity_alias_conflict': '개체 ID가 별칭과 겹쳐 조정 검토 내역에 보류했습니다.',
@@ -29,7 +29,9 @@ def merge_generated_dictionary(previous, output, spans, source, chunk):
     return dictionary, excluded
 
 
-def reconcile_generated_dictionary(previous, output, spans, source, chunk):
+def reconcile_generated_dictionary(previous, output, spans, source, chunk, *, merged_names=(), new_merged=None):
+    """`merged_names` is the provenance of names merged away in earlier chunks, used only to refuse spacing-only ties;
+    the names merged by this call are appended to `new_merged`."""
     from .dictionary_reconciliation import (
         FIELDS,
         SPACING_REFUSAL,
@@ -86,11 +88,11 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
                     target_names[proposal['key']].add(proposal['after']['name'])
             for row in definitions['aliases']:
                 if (row['alias'] in entities and row['entity'] in entities and row['alias'] != row['entity']
-                        and not spacing_conflict(row['alias'], row['entity'], entities, result['aliases'])
+                        and not spacing_conflict(row['alias'], row['entity'], entities, result['aliases'], merged_names)
                         and ('aliases', row['alias']) not in conflicts and row['quote'] and row['quote'] in chunk
                         and row['alias'] in row['quote'] and any(name in row['quote'] for name in target_names[row['entity']])):
                     canonical_keys.update((('entities', row['alias']), ('entities', row['entity']), ('aliases', row['alias'])))
-            result, revision_events = revise(previous, validate_dictionary(result, source), revisions, source, canonical_keys)
+            result, revision_events = revise(previous, validate_dictionary(result, source), revisions, source, canonical_keys, merged_names)
             changes.extend(revision_events)
             all_types.update(r['type'] for r in result['entities'])
         for index, row in enumerate(definitions[kind], 1):
@@ -106,7 +108,7 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
                 target = entities.get(row['entity'])
                 if target is None:
                     code = 'excluded_entity'
-                elif old is None and spacing_conflict(row['alias'], row['entity'], entities, result['aliases']):
+                elif old is None and spacing_conflict(row['alias'], row['entity'], entities, result['aliases'], merged_names):
                     code = 'alias_spacing_only'
                 elif row['alias'] not in row['quote'] or (row['alias'] != row['entity'] and target['name'] not in row['quote']):
                     code = 'alias_evidence'
@@ -142,7 +144,8 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
                 continue
             result[kind].append(row)
     result = validate_dictionary(result, source)
-    result, canonical_events = canonicalize(result, canonical, source, {(r['kind'], r['key']) for r in revisions})
+    result, canonical_events = canonicalize(result, canonical, source, {(r['kind'], r['key']) for r in revisions},
+                                            chunk=chunk, chunk_offset=len(source) - len(chunk), merged=merged_names, new_merged=new_merged)
     changes.extend(canonical_events)
     # Keep legacy exclusion counts for an alias proposal that could not be merged.
     deferred_ids = {e['key'] for e in canonical_events if e['status']=='deferred' and e['origin']=='canonicalization'}

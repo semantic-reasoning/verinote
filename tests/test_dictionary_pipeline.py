@@ -233,7 +233,7 @@ class Pipeline(unittest.TestCase):
         first, _ = self.run_job(doc, [outputs[0], TimeoutError('stop')])
         checkpoint = self.checkpoint(first)
         value = json.loads(checkpoint.read_text())
-        value['schema_version'] = 2; value.pop('reconciliations'); value['contract'].pop('reconciliation_policy')
+        value['schema_version'] = 2; value.pop('reconciliations'); value.pop('merged_names'); value.pop('merged_count'); value['contract'].pop('reconciliation_policy')
         value['contract']['prompt'] = PREVIOUS_COUNT_LIMIT_PROMPT
         checkpoint.write_text(json.dumps(value))
 
