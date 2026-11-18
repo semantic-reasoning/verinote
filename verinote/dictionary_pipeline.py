@@ -300,6 +300,6 @@ def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent
     try:
         atomic_json(root / 'runs' / run['id'] / ADMISSION_RECORD, record)
     except Exception:
-        return (f'{warning} 이 경고의 기록을 저장하지 못했습니다. 문서 화면은 현재 문서 버전의 반려되지 않은 사전이면 이 기록 없이 다시 계산하며, 반려된 사전이나 이전 문서 버전에서는 이 경고를 표시하지 않습니다.' if warning
+        return (f'{warning} 이 경고의 기록을 저장하지 못했습니다. 문서 화면은 현재 문서 버전의 반려되지 않은 사전이면 이 기록 없이 다시 계산하며, 반려된 사전이나 이전 문서 버전의 사전 화면에는 입력 한도 경고를 표시하지 않습니다(이 실행 상세에는 남습니다).' if warning
                 else '추출 입력 한도 검사 기록을 저장하지 못했습니다.')
     return warning

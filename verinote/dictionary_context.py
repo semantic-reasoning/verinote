@@ -297,10 +297,10 @@ def current_admission(cli, agent, other_agent, doc, item, context_limit):
 
 
 def document_admission(service, doc, item):
-    """The document API's extraction admission panel: recomputed for a non-rejected dictionary of the current version,
-    otherwise the generation record through read_admission."""
+    """The document API's extraction admission panel: recomputed for a non-rejected dictionary of the current version.
+    A rejected dictionary or one of an earlier version cannot start an extraction, so it has no panel (#871)."""
     if item['version'] != doc['current_version'] or item['status'] == 'rejected':
-        return read_admission(service.root, item)
+        return None
     from .ontology import MAX_DICTIONARY_CONTEXT_BYTES
     try:
         agent = service.store.run(item['run_id'])['agent']
@@ -365,8 +365,7 @@ def admission_policy():
 
 def read_admission(root, item):
     """None when the item's generation run kept no record, or the dictionary or admission_policy() differs from the record's; else whether it was readable and its warning.
-    A hidden record is not recomputed here; the document API reads records only for rejected items and items of earlier
-    versions, and recomputes the others with current_admission."""
+    A hidden record is not recomputed here. The document API does not show the record at all (#871) and recomputes the panel with current_admission."""
     from .usage import safe_file
     path = root / 'runs' / item['run_id'] / ADMISSION_RECORD
     try:
