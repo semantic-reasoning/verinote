@@ -34,11 +34,7 @@ async function loadLibrary() {
 }
 async function renderDocs() {
   const search = $('#search').value.trim().toLowerCase();
-  let matches = docs;
-  if (search) {
-    const full = await Promise.all(docs.map(d => api(`/api/documents/${d.id}`)));
-    matches = full.filter(d => (d.title+' '+d.text).toLowerCase().includes(search));
-  }
+  const matches = search ? await api('/api/documents/search','POST',{search}) : docs;
   $('#documents').innerHTML = matches.length ? matches.map(d => `<button class="doc-card" data-doc="${d.id}"><span class="badge">DOCUMENT · v${d.current_version}</span><h3>${esc(d.title)}</h3><p>${esc(d.filename)}</p><div class="meta">${esc(date(d.created_at))} &nbsp; ↗ 열기</div></button>`).join('') : `<div class="empty"><h3>${search?'일치하는 문서가 없습니다.':'첫 문서에서 시작하세요.'}</h3><p>원문을 등록하면, 근거가 연결된 나만의 위키를 만들 수 있습니다.</p></div>`;
 }
 function providerById(id){return config?.providers?.find(p=>p.id===id);}
