@@ -1,0 +1,28 @@
+{
+  "model": "gpt-6-luna",
+  "calls": 4,
+  "credits": 1.7794,
+  "seconds": 66.8,
+  "scores": {
+    "front": [
+      4
+    ],
+    "middle": [
+      4,
+      0
+    ],
+    "back": [
+      4
+    ]
+  },
+  "prompt_bytes": [
+    80981,
+    80981,
+    80981,
+    80981
+  ],
+  "verdict": "inconclusive",
+  "reasons": [
+    "1 responses were not usable extraction output"
+  ]
+}

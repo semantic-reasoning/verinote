@@ -1,0 +1,341 @@
+{
+  "rep": 0,
+  "position": "back",
+  "target_offset": 7895,
+  "prompt_bytes": 80981,
+  "seconds": 16.46,
+  "credits": 0.449676,
+  "tokens": {
+    "input": 40840,
+    "output": 1100,
+    "cache_read": 10071,
+    "cache_write": 30766,
+    "reasoning": null
+  },
+  "recovered": 4,
+  "facts": 4,
+  "ungrounded": 0,
+  "answer": {
+    "title": "청람서비스의 시스템 관계",
+    "claims": [
+      {
+        "heading": "저장소 의존",
+        "text": "청람서비스는 은하저장소에 의존한다.",
+        "quote": "청람서비스는 은하저장소에 의존한다."
+      },
+      {
+        "heading": "큐 사용",
+        "text": "청람서비스는 별빛큐를 사용한다.",
+        "quote": "청람서비스는 별빛큐를 사용한다."
+      },
+      {
+        "heading": "인증 호출",
+        "text": "은하저장소는 달무리인증을 호출한다.",
+        "quote": "은하저장소는 달무리인증을 호출한다."
+      },
+      {
+        "heading": "큐 모니터링",
+        "text": "별빛큐는 노을감시기로 모니터링된다.",
+        "quote": "별빛큐는 노을감시기로 모니터링된다."
+      }
+    ],
+    "facts": [
+      {
+        "subject": "cheongram",
+        "predicate": "depends_on",
+        "object": "galaxy-store",
+        "quote": "청람서비스는 은하저장소에 의존한다."
+      },
+      {
+        "subject": "cheongram",
+        "predicate": "uses",
+        "object": "starlight-queue",
+        "quote": "청람서비스는 별빛큐를 사용한다."
+      },
+      {
+        "subject": "galaxy-store",
+        "predicate": "calls",
+        "object": "moonhalo-auth",
+        "quote": "은하저장소는 달무리인증을 호출한다."
+      },
+      {
+        "subject": "starlight-queue",
+        "predicate": "monitored_by",
+        "object": "sunset-monitor",
+        "quote": "별빛큐는 노을감시기로 모니터링된다."
+      }
+    ],
+    "coverage": [
+      {
+        "predicate": "depends_on",
+        "fact_indices": [
+          0
+        ],
+        "claim_indices": [
+          0
+        ],
+        "status": "extracted",
+        "reason": "청람서비스가 은하저장소에 의존한다고 직접 명시한다."
+      },
+      {
+        "predicate": "uses",
+        "fact_indices": [
+          1
+        ],
+        "claim_indices": [
+          1
+        ],
+        "status": "extracted",
+        "reason": "청람서비스가 별빛큐를 사용한다고 직접 명시한다."
+      },
+      {
+        "predicate": "calls",
+        "fact_indices": [
+          2
+        ],
+        "claim_indices": [
+          2
+        ],
+        "status": "extracted",
+        "reason": "은하저장소가 달무리인증을 호출한다고 직접 명시한다."
+      },
+      {
+        "predicate": "monitored_by",
+        "fact_indices": [
+          3
+        ],
+        "claim_indices": [
+          3
+        ],
+        "status": "extracted",
+        "reason": "별빛큐가 노을감시기로 모니터링된다고 직접 명시한다."
+      },
+      {
+        "predicate": "rel_0",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_1",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_2",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_3",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_4",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_5",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_6",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      },
+      {
+        "predicate": "rel_7",
+        "fact_indices": [],
+        "claim_indices": [],
+        "status": "no_evidence",
+        "reason": "원문에 승인된 타입 방향에 해당하는 직접 관계가 없다."
+      }
+    ],
+    "dictionary_gaps": []
+  },
+  "raw": {
+    "usage.json": {
+      "schema_version": 1,
+      "agent": "copilot",
+      "requested_model": "gpt-6-luna",
+      "resolved_model": "gpt-6-luna",
+      "tokens": {
+        "input": 40840,
+        "output": 1100,
+        "cache_read": 10071,
+        "cache_write": 30766,
+        "reasoning": null
+      },
+      "reported_usd": null,
+      "reported_credits": 0.449676,
+      "credit_unit": "GitHub AI credits",
+      "estimated_usd": null,
+      "estimated_credits": null,
+      "estimated_credit_unit": null,
+      "rate_snapshot": null,
+      "rate_basis": null,
+      "complete": true,
+      "status": "success",
+      "warnings": [],
+      "source": "copilot --usage-output-file",
+      "cli_call_id": "c5eb36c5c3354d9da67fc4e3eaa66c4d",
+      "started_at": "2026-11-19T02:54:55.939918+00:00",
+      "finished_at": "2026-11-19T02:55:12.320053+00:00"
+    },
+    "provider-usage.json": {
+      "totalPremiumRequestCost": 1,
+      "totalUserRequests": 1,
+      "totalNanoAiu": 449676000,
+      "aiCreditsStatus": "complete",
+      "tokenDetails": {
+        "input": {
+          "tokenCount": 3
+        },
+        "cache_read": {
+          "tokenCount": 10071
+        },
+        "cache_write": {
+          "tokenCount": 30766
+        },
+        "output": {
+          "tokenCount": 1100
+        }
+      },
+      "totalApiDurationMs": 9488,
+      "sessionStartTime": "2026-11-19T02:54:56.684Z",
+      "codeChanges": {
+        "linesAdded": 0,
+        "linesRemoved": 0,
+        "filesModifiedCount": 0,
+        "filesModified": []
+      },
+      "modelMetrics": {
+        "gpt-6-luna": {
+          "requests": {
+            "count": 1,
+            "cost": 1
+          },
+          "usage": {
+            "inputTokens": 40840,
+            "outputTokens": 1100,
+            "cacheReadTokens": 10071,
+            "cacheWriteTokens": 30766,
+            "reasoningTokens": 305
+          },
+          "cacheExpiresAt": "2026-11-19T03:25:01.532Z",
+          "totalNanoAiu": 449676000,
+          "aiCreditsStatus": "complete",
+          "tokenDetails": {
+            "input": {
+              "tokenCount": 3
+            },
+            "cache_read": {
+              "tokenCount": 10071
+            },
+            "cache_write": {
+              "tokenCount": 30766
+            },
+            "output": {
+              "tokenCount": 1100
+            }
+          }
+        }
+      },
+      "agentMetrics": {
+        "main": {
+          "totalApiDurationMs": 9488,
+          "totalNanoAiu": 449676000,
+          "modelMetrics": {
+            "gpt-6-luna": {
+              "requests": {
+                "count": 1,
+                "cost": 1
+              },
+              "usage": {
+                "inputTokens": 40840,
+                "outputTokens": 1100,
+                "cacheReadTokens": 10071,
+                "cacheWriteTokens": 30766,
+                "reasoningTokens": 305
+              },
+              "totalNanoAiu": 449676000,
+              "tokenDetails": {
+                "input": {
+                  "tokenCount": 3
+                },
+                "cache_read": {
+                  "tokenCount": 10071
+                },
+                "cache_write": {
+                  "tokenCount": 30766
+                },
+                "output": {
+                  "tokenCount": 1100
+                }
+              }
+            }
+          }
+        }
+      },
+      "providerModelMetrics": [
+        {
+          "provider": {
+            "id": "copilot",
+            "label": "GitHub Copilot",
+            "kind": "copilot"
+          },
+          "modelId": "gpt-6-luna",
+          "metrics": {
+            "requests": {
+              "count": 1,
+              "cost": 1
+            },
+            "usage": {
+              "inputTokens": 40840,
+              "outputTokens": 1100,
+              "cacheReadTokens": 10071,
+              "cacheWriteTokens": 30766,
+              "reasoningTokens": 305
+            },
+            "totalNanoAiu": 449676000,
+            "aiCreditsStatus": "complete",
+            "tokenDetails": {
+              "input": {
+                "tokenCount": 3
+              },
+              "cache_read": {
+                "tokenCount": 10071
+              },
+              "cache_write": {
+                "tokenCount": 30766
+              },
+              "output": {
+                "tokenCount": 1100
+              }
+            }
+          },
+          "modelDisplayName": "GPT-6 Luna"
+        }
+      ],
+      "currentModel": "gpt-6-luna",
+      "lastCallInputTokens": 40840,
+      "lastCallOutputTokens": 1100
+    }
+  }
+}

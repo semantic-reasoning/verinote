@@ -197,6 +197,19 @@ class ExtractionRecovery(unittest.TestCase):
         self.assertEqual([call['payload']['offset'] for call in calls], [8000])
         self.assertIn('1청크 재사용', final['detail'])
 
+    def test_checkpoint_from_another_chunk_size_is_not_reused_and_every_span_is_sent(self):
+        doc = self.document(3)
+        first, sent = self.execute(doc, [extraction_response(), TimeoutError('timeout')])
+        value = json.loads(self.checkpoint(first).read_text(encoding='utf-8'))
+        # The recorded size must be the spacing of the spans actually sent, so a changed chunker cannot keep an 8,000 label.
+        self.assertEqual(value['contract']['chunk_size'], sent[1]['payload']['offset'] - sent[0]['payload']['offset'])
+        value['contract']['chunk_size'] = 6000
+        atomic_json(self.checkpoint(first), value)
+        final, calls = self.execute(doc, [extraction_response()] * 3)
+        self.assertEqual(final['status'], 'success', final['detail'])
+        self.assertEqual([c['payload']['offset'] for c in calls], [0, 8000, 16000])
+        self.assertNotIn('청크 재사용', final['detail'])
+
     def test_dictionary_revision_provider_model_and_document_version_must_match(self):
         for change in ('dictionary', 'agent', 'model', 'version'):
             with self.subTest(change=change):
