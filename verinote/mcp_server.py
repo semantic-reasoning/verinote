@@ -41,9 +41,11 @@ def create_server(workflow):
 
     @server.tool(annotations=start)
     def start_analysis(document_id: StrictStr, stage: StrictStr, expected_version: StrictInt,
-                       expected_generation: StrictInt, client_label: StrictStr = 'desktop') -> dict:
-        """Start ontology (dictionary) or extract (requires human-approved dictionary). client_label is self-reported, not a verified model identity. If the response is lost, find the run with list_analysis_runs."""
-        return call(workflow.start, document_id, stage, expected_version, expected_generation, client_label)
+                       expected_generation: StrictInt, client_label: StrictStr = 'desktop',
+                       regenerate_id: StrictStr | None = None, regenerate_revision: StrictInt | None = None) -> dict:
+        """Start ontology (dictionary) or extract (requires human-approved dictionary). To regenerate a dictionary a human rejected in the web UI, pass its id and revision as regenerate_id/regenerate_revision (ontology only). client_label is self-reported, not a verified model identity. If the response is lost, find the run with list_analysis_runs."""
+        return call(workflow.start, document_id, stage, expected_version, expected_generation, client_label,
+                    regenerate_id, regenerate_revision)
 
     @server.tool(annotations=read)
     def get_run_status(run_id: StrictStr) -> dict:
