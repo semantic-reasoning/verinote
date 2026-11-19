@@ -14,6 +14,7 @@ from .store import canonical
 MAX_ROUNDS = 6
 MAX_TOOLS = 10
 MAX_CONTEXT = 60000
+WIKI_READ_CHARS = 8000
 MAX_SEARCH_ANCHORS = 12
 GENERIC_ANCHORS = {'문서', '내용', '설명', '정의', '질문', '개체', '서비스', '요약', 'document', 'file', 'wiki', 'entity', 'service'}
 PROMPT = '''한국어로 질문에 답하는 근거 기반 위키 도우미입니다. JSON 객체만 출력하세요.
@@ -30,7 +31,7 @@ PROMPT = '''한국어로 질문에 답하는 근거 기반 위키 도우미입�
 query_graph: action direct/downstream/upstream/path, subject/predicate/target 문자열. direct는 직접 관계, downstream은 subject에서 도달, upstream은 subject로 도달하는 출발점, path는 subject에서 target. 전이는 predicate 필수. direct의 target은 사용하지 말 것.
 search_knowledge: query 문자열, document_id 선택, offset(결과 인덱스, 기본0). 승인 위키 제목·주장과 승인 사전 개체·별칭·관계 정의를 검색하고 문서 메타데이터도 찾습니다. 20개씩 next_offset으로 이어 검색합니다. lookup_id(K1 등)는 fallback 검증용이며 인용 불가. knowledge_version이 null이면 옛 스냅샷이며 wiki_status가 문서별 승인·일치 위키 수를 알려줍니다. ontology 결과는 어휘/스키마 안내일 뿐 관계 사실이 아닙니다.
 전체 검색어로 승인 지식을 찾지 못하면 질문 안의 문서명·승인 개체·별칭으로 후보를 찾습니다. match_mode=catalog와 matched_terms는 탐색 안내이며 근거가 아닙니다. 위키 후보가 먼저 나옵니다. anchors_truncated=true이면 검색 범위를 문서 ID·짧은 이름으로 좁히세요. 이때 next_offset이 없어도 완전한 검색이 아닙니다.
-read_wiki: page_id, offset(문자 위치, 기본0). 고정 승인 위키의 설명과 원문 인용을 최대2000자씩 읽습니다. kind=wiki 근거는 페이지 ID·revision·원문 버전·해시·claim_indices(0기반)·partial을 포함합니다. next_offset으로 이어 읽으세요. 부분 읽기로 전체에 없다고 단정하지 마세요.
+read_wiki: page_id, offset(문자 위치, 기본0). 고정 승인 위키의 설명과 원문 인용을 최대8000자씩 읽습니다. kind=wiki 근거는 페이지 ID·revision·원문 버전·해시·claim_indices(0기반)·partial을 포함합니다. next_offset으로 이어 읽으세요. 부분 읽기로 전체에 없다고 단정하지 마세요.
 search_documents: query, mode(metadata 기본/body), document_id 선택. 기본은 제목·파일명만 검색합니다. body는 한 document_id와 fallback이 필수이며 원문 본문도 검색합니다. 결과는 탐색용으로 인용 불가.
 read_document: document_id, offset(기본0), fallback 필수. 고정 버전 원문 최대2000자. next_offset으로 이어 읽습니다.
 원문 fallback 형식: {"lookup_id":"K1","reason":"no_approved_wiki","detail":"승인 자료에서 답할 수 없는 구체 이유","wiki_evidence_ids":[]}
@@ -303,7 +304,7 @@ class Assistant:
                 body, ranges = self.wiki_text(page)
                 if offset >= len(body):
                     raise ValueError('위키 offset 범위 오류')
-                end = min(offset + 2000, len(body))
+                end = min(offset + WIKI_READ_CHARS, len(body))
                 result = {'kind': 'wiki', 'page_id': key, 'revision': page['revision'], 'document_id': page['document_id'],
                           'version': page['version'], 'sha256': page['sha256'], 'approval': 'approved', 'title': page['payload']['title'],
                           'text': body[offset:end], 'offset': offset, 'end_offset': end, 'total_chars': len(body),
