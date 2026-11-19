@@ -1,5 +1,6 @@
 """Bounded extraction orchestration; validation never performs human approval."""
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -246,18 +247,16 @@ class Service:
             report.pop('chunks', None)
         return result
 
-    def restore_claim(self, run_id, data):
-        """Restore one quote-excluded wiki claim from a reviewer-chosen source span; the claim text comes from the verified original response."""
+    def verified_excluded_claim(self, run_id, chunk, path):
+        """Return (report row, original claim) for an excluded claim, cross-checked against the verified saved original response."""
         from .extraction_checkpoint import CHECKPOINT_LIMIT
         from .extraction_loss import verify_saved_audit
         from .usage import safe_file
-        if not isinstance(data, dict) or set(data) != {'chunk', 'path', 'quote', 'actor', 'reason'} or type(data['chunk']) is not int or not isinstance(data['path'], str):
-            raise ValueError('복구에는 chunk, path, quote, actor, reason이 필요합니다.')
         report = read_report(self.root, self.store, run_id)
         chunks = report.get('chunks') if report.get('available', True) else None
-        if not chunks or not 1 <= data['chunk'] <= len(chunks):
+        if not chunks or not 1 <= chunk <= len(chunks):
             raise ValueError('점검 기록의 청크를 찾을 수 없습니다.')
-        rows = [r for r in chunks[data['chunk'] - 1].get('excluded_claims', ()) if r['path'] == data['path']]
+        rows = [r for r in chunks[chunk - 1].get('excluded_claims', ()) if r['path'] == path]
         if not rows:
             raise ValueError('이 청크의 제외한 주장을 찾을 수 없습니다.')
         row, run = rows[0], self.store.run(run_id)
@@ -266,14 +265,31 @@ class Service:
             raise ValueError(unverified)
         try:
             raw = safe_file(self.root, f'runs/{run_id}/extraction-checkpoint.json', CHECKPOINT_LIMIT)
-            audit = json.loads(raw)['outputs'][data['chunk'] - 1]['loss_audit']
-            verify_saved_audit(self.root, run, data['chunk'], audit)
+            audit = json.loads(raw)['outputs'][chunk - 1]['loss_audit']
+            verify_saved_audit(self.root, run, chunk, audit)
             original = audit['initial']['claims'][int(row['path'].split('.')[1])]
             if (not all(isinstance(original[k], str) for k in ('heading', 'text', 'quote')) or original['heading'] != row['heading']
-                    or original['text'] != row['text'] or not original['quote'].startswith(row['quote'])):
+                    or not original['text'].startswith(row['text']) or not original['quote'].startswith(row['quote'])):
                 raise ValueError('mismatch')
         except (ValueError, TypeError, KeyError, IndexError, OSError):
             raise ValueError(unverified) from None
+        return row, original
+
+    def excluded_claim(self, run_id, chunk, path):
+        """The verified full text of an excluded claim, with the digest a restore must echo to confirm the reviewer saw it."""
+        if type(chunk) is not int or not isinstance(path, str):
+            raise ValueError('chunk와 path가 필요합니다.')
+        _, original = self.verified_excluded_claim(run_id, chunk, path)
+        return {'heading': original['heading'], 'text': original['text'], 'text_sha256': hashlib.sha256(original['text'].encode()).hexdigest()}
+
+    def restore_claim(self, run_id, data):
+        """Restore one quote-excluded wiki claim from a reviewer-chosen source span; the claim text comes from the verified original response."""
+        keys = {'chunk', 'path', 'quote', 'actor', 'reason'}
+        if not isinstance(data, dict) or not keys <= set(data) <= keys | {'text_sha256'} or type(data['chunk']) is not int or not isinstance(data['path'], str):
+            raise ValueError('복구에는 chunk, path, quote, actor, reason이 필요합니다.')
+        row, original = self.verified_excluded_claim(run_id, data['chunk'], data['path'])
+        if original['text'] != row['text'] and data.get('text_sha256') != hashlib.sha256(original['text'].encode()).hexdigest():
+            raise ValueError('보고서에는 일부만 보이는 긴 주장입니다. 전문을 확인한 뒤 그 전문의 text_sha256을 함께 보내야 복구할 수 있습니다.')
         return self.store.restore_claim(run_id, data['chunk'], row['path'], original['heading'], original['text'], data['quote'], data['actor'], data['reason'])
 
     def dictionary_exclusions(self, run_id, *, document_id=None, version=None, include_items=True):
@@ -721,7 +737,7 @@ class Service:
             if checkpoint is not None and checkpoint.exclusion_notice():
                 detail = f'{checkpoint.exclusion_notice()} · {detail}'
             if checkpoint is not None and checkpoint.quote_exclusion_notice():
-                detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 원 응답이 저장된 계약 v3 실행에서는 보고서에 전문이 보이는 제외 위키 주장을 원문 구간을 지정해 호출 없이 복구할 수 있습니다. 제외한 관계와 그 외 실행의 주장은 복구하는 기능이 없습니다. '
+                detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 원 응답이 저장된 계약 v3 실행에서는 제외 위키 주장을(300자를 넘으면 검증된 전문을 확인한 뒤) 원문 구간을 지정해 호출 없이 복구할 수 있습니다. 제외한 관계와 그 외 실행의 주장은 복구하는 기능이 없습니다. '
                           f'사전을 수정·재승인해 재추출하면 모든 청크를 새로 호출하며 같은 결과가 나올 수 있습니다. · {detail}')
             with timing.section('publish'):
                 try:
