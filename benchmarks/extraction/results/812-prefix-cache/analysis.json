@@ -1,0 +1,51 @@
+{
+  "model": "gpt-6-luna",
+  "calls": 14,
+  "credits": 4.5677,
+  "seconds": 158.4,
+  "nonce": "4f0667fbaadb49daaba16444c2dcf292",
+  "warmed_baseline_cache_read": 10071,
+  "measured": {
+    "same_folder": {
+      "dictionary_tokens": 23733,
+      "warm_cache_read": 10071,
+      "cache_reads": [
+        10071,
+        10071,
+        10071,
+        10071,
+        10071
+      ]
+    },
+    "different_folder": {
+      "dictionary_tokens": 22522,
+      "warm_cache_read": 10071,
+      "cache_reads": [
+        10071,
+        10071,
+        10071,
+        10071,
+        10071
+      ]
+    }
+  },
+  "conditions": {
+    "same_folder": {
+      "median_cache_read": 10071,
+      "beyond_baseline": 269,
+      "dictionary_tokens": 23733,
+      "share": 0.011,
+      "passes": false
+    },
+    "different_folder": {
+      "median_cache_read": 10071,
+      "beyond_baseline": 269,
+      "dictionary_tokens": 22522,
+      "share": 0.012,
+      "passes": false
+    }
+  },
+  "verdict": "rejected",
+  "threshold": 0.5,
+  "baseline_hit": 9802
+}
