@@ -104,11 +104,15 @@ class MCPWorkflow:
             rows = readable_runs(found)[0][:50]
             return [self._status(db, self.store.unpack_run(row)) for row in rows]
 
-    def start(self, document_id, stage, expected_version, expected_generation, client_label='desktop'):
+    def start(self, document_id, stage, expected_version, expected_generation, client_label='desktop',
+              regenerate_id=None, regenerate_revision=None):
         identifier(document_id)
         label = text(client_label, 'client_label', 100)
+        if (regenerate_id is None) != (regenerate_revision is None):
+            raise ValueError('사전 재생성에는 regenerate_id와 regenerate_revision이 함께 필요합니다.')
+        regenerate = None if regenerate_id is None else {'id': regenerate_id, 'revision': regenerate_revision}
         run = self.store.create_run(document_id, 'mcp', label, stage, expected_version, expected_generation,
-                                    extraction_contract=2, external=True)
+                                    extraction_contract=2, external=True, regenerate=regenerate)
         return self.status(run['id'])
 
     def _load(self, db, run_id, *, active=False):

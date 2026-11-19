@@ -57,6 +57,26 @@ class MCPWorkflowTests(unittest.TestCase):
             self.assertTrue(first['review_required'])
             self.assertTrue(self.store.document(self.doc['id'])['can_extract'])
 
+    def test_rejected_dictionary_regenerates_through_mcp_as_new_pending_revision(self):
+        item = self.accept_dictionary()
+        d = self.store.document(self.doc['id'])
+        with self.assertRaises(Conflict):
+            self.flow.start(d['id'], 'ontology', d['version'], d['generation'])
+        with self.assertRaises(ValueError):
+            self.flow.start(d['id'], 'ontology', d['version'], d['generation'], regenerate_id=item['id'])
+        current = self.store.document(self.doc['id'])['items'][0]
+        with self.assertRaises(Conflict):  # still approved
+            self.flow.start(d['id'], 'ontology', d['version'], d['generation'], regenerate_id=item['id'], regenerate_revision=current['revision'])
+        self.store.review(item['id'], current['revision'], 'rejected', 'human', '관계 부족')
+        rejected = self.store.document(self.doc['id'])['items'][0]
+        with self.assertRaises(Conflict):  # stale revision
+            self.flow.start(d['id'], 'ontology', d['version'], d['generation'], regenerate_id=item['id'], regenerate_revision=rejected['revision'] + 1)
+        key = self.flow.start(d['id'], 'ontology', d['version'], d['generation'], regenerate_id=item['id'], regenerate_revision=rejected['revision'])['id']
+        self.flow.submit(key, 1, DICTIONARY, 'ontology')
+        self.flow.finalize(key)
+        regenerated = self.store.document(self.doc['id'])['items'][0]
+        self.assertEqual((regenerated['id'], regenerated['status'], regenerated['revision']), (item['id'], 'pending', rejected['revision'] + 1))
+
     def test_no_extraction_before_human_approval(self):
         with self.assertRaises(Conflict): self.start('extract')
         key = self.start()

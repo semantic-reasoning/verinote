@@ -620,7 +620,7 @@ class Store:
         return owners[:limit], total
 
     def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None, extraction_contract=None, external=False):
-        if external and (agent != 'mcp' or execution_options is not None or extraction_options is not None or regenerate is not None):
+        if external and (agent != 'mcp' or execution_options is not None or extraction_options is not None):
             raise ValueError('MCP 실행 옵션 오류')
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
