@@ -225,6 +225,9 @@ class Service:
         if kind == 'runs' and owner.get('stage') == 'extract':
             report = read_report(self.root, self.store, owner['id'])
             result['coverage'] = report
+            if report.get('chunks') is not None:
+                if restored := self.store.restorations(owner['id']):
+                    report['restorations'] = restored
             from .extraction_loss import read_loss
             result['loss_audit'] = read_loss(self.root, self.store, owner, coverage_details)
         if kind == 'runs' and owner.get('stage') == 'ontology':
@@ -242,6 +245,36 @@ class Service:
         if report is not None and not coverage_details:
             report.pop('chunks', None)
         return result
+
+    def restore_claim(self, run_id, data):
+        """Restore one quote-excluded wiki claim from a reviewer-chosen source span; the claim text comes from the verified original response."""
+        from .extraction_checkpoint import CHECKPOINT_LIMIT
+        from .extraction_loss import verify_saved_audit
+        from .usage import safe_file
+        if not isinstance(data, dict) or set(data) != {'chunk', 'path', 'quote', 'actor', 'reason'} or type(data['chunk']) is not int or not isinstance(data['path'], str):
+            raise ValueError('복구에는 chunk, path, quote, actor, reason이 필요합니다.')
+        report = read_report(self.root, self.store, run_id)
+        chunks = report.get('chunks') if report.get('available', True) else None
+        if not chunks or not 1 <= data['chunk'] <= len(chunks):
+            raise ValueError('점검 기록의 청크를 찾을 수 없습니다.')
+        rows = [r for r in chunks[data['chunk'] - 1].get('excluded_claims', ()) if r['path'] == data['path']]
+        if not rows:
+            raise ValueError('이 청크의 제외한 주장을 찾을 수 없습니다.')
+        row, run = rows[0], self.store.run(run_id)
+        unverified = '원 응답을 검증할 수 없어 복구하지 않았습니다. 원 응답 기록이 있는 계약 v3 실행만 복구할 수 있습니다.'
+        if (run.get('ontology') or {}).get('extraction_contract') != 3:
+            raise ValueError(unverified)
+        try:
+            raw = safe_file(self.root, f'runs/{run_id}/extraction-checkpoint.json', CHECKPOINT_LIMIT)
+            audit = json.loads(raw)['outputs'][data['chunk'] - 1]['loss_audit']
+            verify_saved_audit(self.root, run, data['chunk'], audit)
+            original = audit['initial']['claims'][int(row['path'].split('.')[1])]
+            if (not all(isinstance(original[k], str) for k in ('heading', 'text', 'quote')) or original['heading'] != row['heading']
+                    or original['text'] != row['text'] or not original['quote'].startswith(row['quote'])):
+                raise ValueError('mismatch')
+        except (ValueError, TypeError, KeyError, IndexError, OSError):
+            raise ValueError(unverified) from None
+        return self.store.restore_claim(run_id, data['chunk'], row['path'], original['heading'], original['text'], data['quote'], data['actor'], data['reason'])
 
     def dictionary_exclusions(self, run_id, *, document_id=None, version=None, include_items=True):
         from .dictionary_exclusions import read_report
@@ -688,7 +721,7 @@ class Service:
             if checkpoint is not None and checkpoint.exclusion_notice():
                 detail = f'{checkpoint.exclusion_notice()} · {detail}'
             if checkpoint is not None and checkpoint.quote_exclusion_notice():
-                detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 제외 항목만 복구하는 기능은 없습니다. '
+                detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 원 응답이 저장된 계약 v3 실행에서는 보고서에 전문이 보이는 제외 위키 주장을 원문 구간을 지정해 호출 없이 복구할 수 있습니다. 제외한 관계와 그 외 실행의 주장은 복구하는 기능이 없습니다. '
                           f'사전을 수정·재승인해 재추출하면 모든 청크를 새로 호출하며 같은 결과가 나올 수 있습니다. · {detail}')
             with timing.section('publish'):
                 try:
