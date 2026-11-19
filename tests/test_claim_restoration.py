@@ -109,15 +109,31 @@ class Restoration(unittest.TestCase):
             self.store.restore_claim(run['id'], 1, 'claims.0.quote', '가', '주문', 'aa', 'reviewer', '확인')
         self.assertEqual(self.store.restorations(run['id']), [])
 
-    def test_refuses_a_claim_whose_full_text_is_not_visible_in_the_report(self):
+    def test_a_long_claim_is_restored_only_with_the_digest_of_its_verified_full_text(self):
         doc = self.document()
         long_claim = CLAIM1 | {'text': '긴 본문 ' * 100}
         run, _ = self.run_it(doc, [resp([bad(long_claim), CLAIM2], FACTS[:1]), reply(('claims.0.quote', ''))])
         self.assertEqual((run['status'], run['ontology']['extraction_contract']), ('success', 3), run['detail'])
         self.service = Service(self.store, self.root, None)
-        with self.assertRaisesRegex(ValueError, '검증할 수 없어'):
-            self.service.restore_claim(run['id'], self.body())
+        shown = self.service.excluded_claim(run['id'], 1, 'claims.0.quote')
+        self.assertEqual(shown['text'], long_claim['text'])
+        self.assertIn('data-load-claim', self.render(self.service.with_usage('runs', self.store.run(run['id']))['coverage']))
+        for bad_body in (self.body(), self.body(text_sha256='0' * 64)):
+            with self.assertRaisesRegex(ValueError, '전문'):
+                self.service.restore_claim(run['id'], bad_body)
         self.assertEqual(self.store.restorations(run['id']), [])
+        result = self.service.restore_claim(run['id'], self.body(text_sha256=shown['text_sha256']))
+        added = next(i for i in self.store.document(doc['id'])['items'] if i['id'] == result['item_id'])
+        self.assertEqual(added['payload']['claims'][0]['text'], long_claim['text'].strip())
+
+    def test_the_full_text_is_not_shown_when_the_saved_original_disagrees(self):
+        _, run, _ = self.setup_run()
+        path = Path(self.root) / 'runs' / run['id'] / 'extraction-checkpoint.json'
+        value = json.loads(path.read_text(encoding='utf-8'))
+        value['outputs'][0]['loss_audit']['initial']['claims'][0]['text'] = '다른 본문'
+        path.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, '검증할 수 없어'):
+            self.service.excluded_claim(run['id'], 1, 'claims.0.quote')
 
     def test_refuses_when_the_saved_original_response_disagrees_with_the_report(self):
         _, run, _ = self.setup_run()

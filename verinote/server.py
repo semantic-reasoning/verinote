@@ -302,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('취소에는 expected_status(queued 또는 running)만 필요합니다.')
                 previous = self.server.service.cancel(parts[2], data['expected_status'])
                 return self.send(self.server.service.with_usage('runs', store.run(parts[2])) | {'cancel': {'previous': previous}})
+            if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'excluded-claim' and method == 'GET':
+                if set(params) != {'chunk', 'path'} or any(len(v) != 1 for v in params.values()) or not params['chunk'][0].isdecimal():
+                    raise ValueError('chunk와 path가 필요합니다.')
+                return self.send(self.server.service.excluded_claim(parts[2], int(params['chunk'][0]), params['path'][0]))
             if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'restore-claim' and method == 'POST':
                 return self.send(self.server.service.restore_claim(parts[2], self.body()), 201)
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
