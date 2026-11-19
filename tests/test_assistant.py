@@ -404,16 +404,16 @@ class WikiQuestionTests(unittest.TestCase):
         return tool(name='search_knowledge',query=query,document_id=document_id or self.doc['id'])
 
     def test_sixth_call_answers_with_fifth_call_evidence(self):
-        page = self.wiki(claims=[{'heading':'구조','text':'설명'*525,'quote':SOURCE} for _ in range(2)])
+        page = self.wiki(claims=[{'heading':'구조','text':'설명'*700,'quote':SOURCE} for _ in range(8)])
         def final(prompt):
             state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
             self.assertTrue(state['answer_only'])
             self.assertEqual((state['round'], state['exploration_rounds_remaining']), (6, 0))
-            self.assertEqual(state['evidence']['E3']['offset'], 2000)
+            self.assertEqual(state['evidence']['E3']['offset'], 8000)
             self.assertIsNone(state['evidence']['E3']['next_offset'])
             return answer(kind='wiki', ids=['E3'])
         outputs = [tool(), self.lookup(), tool(name='read_wiki',page_id=page['id']), tool(),
-                   tool(name='read_wiki',page_id=page['id'],offset=2000), final]
+                   tool(name='read_wiki',page_id=page['id'],offset=8000), final]
         with patch.object(self.store,'source_text',side_effect=AssertionError('raw body read')):
             job, fake = self.ask(outputs)
         self.assertEqual(job['status'], 'success', job['error'])
@@ -599,14 +599,14 @@ class WikiQuestionTests(unittest.TestCase):
             self.assertFalse(job['trace'][1]['result']['citable'])
 
     def test_wiki_citation_types_and_bounds(self):
-        page=self.wiki(claims=[{'heading':'구조','text':'설명'*600,'quote':SOURCE} for _ in range(3)])
+        page=self.wiki(claims=[{'heading':'구조','text':'설명'*700,'quote':SOURCE} for _ in range(8)])
         def next_part(prompt):
             state=json.loads(prompt.split('입력 상태(JSON):\n',1)[1]);e=state['evidence']['E2']
-            self.assertTrue(e['partial']);self.assertEqual(e['next_offset'],2000)
+            self.assertTrue(e['partial']);self.assertEqual(e['next_offset'],8000)
             return tool(name='read_wiki',page_id=page['id'],offset=e['next_offset'])
         job,_=self.ask([batch(tool(),self.lookup()),tool(name='read_wiki',page_id=page['id']),next_part,answer(kind='wiki',ids=['E3'])])
         self.assertEqual(job['status'],'success',job['error'])
-        self.assertEqual(job['evidence']['E3']['offset'],2000)
+        self.assertEqual(job['evidence']['E3']['offset'],8000)
         self.assertIsNone(job['evidence']['E3']['next_offset'])
         for kind,ids in [('source',['E2']),('graph',['E2']),('wiki',['E1'])]:
             job,_=self.ask([batch(tool(),self.lookup()),tool(name='read_wiki',page_id=page['id']),answer(kind=kind,ids=ids)])
