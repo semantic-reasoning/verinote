@@ -567,7 +567,7 @@ def read_report(root, store, run_id):
         run = store.unpack_run(row)
         source = db.execute('SELECT length(text) FROM versions WHERE document_id=? AND version=?',
                             (run['document_id'], run['version'])).fetchone()
-        pages = db.execute("SELECT payload FROM items WHERE run_id=? AND kind='page'", (run_id,)).fetchall()
+        pages = db.execute("SELECT payload FROM items WHERE run_id=? AND kind='page' AND id NOT IN (SELECT item_id FROM recoveries)", (run_id,)).fetchall()
         saved = db.execute("SELECT count(*) FROM items WHERE run_id=? AND kind='fact'", (run_id,)).fetchone()[0]
     if (not source or run['stage'] != 'extract' or not run['ontology']
             or type(run['ontology'].get('extraction_contract')) is not int
@@ -628,7 +628,7 @@ def read_report(root, store, run_id):
         with store.connect() as db:
             current_version = db.execute('SELECT current_version FROM documents WHERE id=?', (run['document_id'],)).fetchone()
             dictionary_item = db.execute('SELECT revision,status FROM items WHERE id=?', (run['ontology']['id'],)).fetchone()
-        return {'available': True, 'status': run['status'], 'published': run['status'] == 'success',
+        return {'available': True, 'status': run['status'], 'published': run['status'] == 'success', 'extraction_contract': run['ontology']['extraction_contract'],
                 'total_chunks': total_chunks, 'validated_chunks': len(report['chunks']),
                 'emitted_fact_count': emitted, 'excluded_fact_count': mismatched, 'unverifiable_fact_count': unverifiable,
                 'excluded_spelling_count': spellings, 'excluded_type_count': mismatched - spellings,

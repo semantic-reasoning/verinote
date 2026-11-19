@@ -119,7 +119,7 @@ class Exclusions(unittest.TestCase):
         doc = self.document()
         run, _ = self.run_it(doc, [resp([bad(CLAIM1), CLAIM2], FACTS[:1]), reply(('claims.0.quote', ''))])
         self.assertIn(CONSUMED, run['detail'])
-        self.assertIn('제외 항목만 복구하는 기능은 없습니다', run['detail'])
+        self.assertIn('제외한 관계와 그 외 실행의 주장은 복구하는 기능이 없습니다', run['detail'])
         self.assertIn('모든 청크를 새로 호출하며 같은 결과가 나올 수 있습니다', run['detail'])
         self.assertFalse(self.store.document(doc['id'])['can_extract'])
 

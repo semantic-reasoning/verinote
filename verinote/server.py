@@ -302,6 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('취소에는 expected_status(queued 또는 running)만 필요합니다.')
                 previous = self.server.service.cancel(parts[2], data['expected_status'])
                 return self.send(self.server.service.with_usage('runs', store.run(parts[2])) | {'cancel': {'previous': previous}})
+            if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'restore-claim' and method == 'POST':
+                return self.send(self.server.service.restore_claim(parts[2], self.body()), 201)
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
                 return self.send(self.server.service.with_usage('runs', store.run(parts[2])))
             if route.path == '/api/questions':

@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS versions(document_id TEXT,version INTEGER,filename TE
 CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,document_id TEXT,version INTEGER,kind TEXT,payload TEXT,status TEXT,revision INTEGER,run_id TEXT);
 CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,item_id TEXT,revision INTEGER,action TEXT,actor TEXT,reason TEXT,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,document_id TEXT,version INTEGER,agent TEXT,model TEXT,status TEXT,detail TEXT,created_at TEXT);
+CREATE TABLE IF NOT EXISTS recoveries(origin TEXT PRIMARY KEY,run_id TEXT NOT NULL,item_id TEXT NOT NULL,chunk INTEGER NOT NULL,path TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS log_cleanup(kind TEXT, id TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
@@ -939,6 +940,47 @@ class Store:
                            '이 실행은 요청된 때부터 끝날 때까지 이 문서에 원문 버전 등록이나 삭제가 없어야 결과를 저장하므로, 지금 등록하면 호출 비용을 쓴 결과를 저장하지 못합니다. '
                            + Store.run_wait_advice(run['status'], '다시 등록', run['stage']))
 
+    def restore_claim(self, run_id, chunk, path, heading, claim_text, quote, actor, reason):
+        """Publish one reviewer-sourced claim of a quote-excluded response as a new pending page, once per origin; no model call."""
+        from .service import evidence, text, validate_page
+        actor, reason = text(actor, '검토자', 80), text(reason, '사유', 1000)
+        origin = f'{run_id}:{chunk}:{path}'
+        with self.connect(True) as db:
+            row = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+            run = self.unpack_run(row) if row else None
+            if not run or run['stage'] != 'extract' or run['status'] != 'success' or not run['ontology']:
+                raise Conflict('성공한 관계 추출 실행만 제외한 주장을 복구할 수 있습니다.')
+            doc = db.execute('SELECT current_version FROM documents WHERE id=?', (run['document_id'],)).fetchone()
+            if doc is None or doc['current_version'] != run['version']:
+                raise Conflict('이 실행의 원문 버전이 현재 버전이 아니라 복구하지 않았습니다.')
+            pinned = run['ontology']
+            current = db.execute('SELECT * FROM items WHERE id=?', (pinned['id'],)).fetchone()
+            if not current or current['status'] != 'approved' or current['revision'] != pinned['revision'] or digest(json.loads(current['payload'])) != pinned['sha256']:
+                raise Conflict('실행 당시의 승인 사전이 바뀌었거나 승인이 철회되어 복구하지 않았습니다.')
+            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
+            window = source[(chunk - 1) * 8000:chunk * 8000]
+            quote = evidence(quote, window)
+            first = window.find(quote)
+            if window.find(quote, first + 1) >= 0:
+                raise ValueError('선택한 구간이 이 청크에서 한 위치로 확인되지 않습니다. 더 길거나 구체적인 구간을 고르세요.')
+            payload = validate_page({'title': heading, 'claims': [{'heading': heading, 'text': claim_text, 'quote': quote}]}, source)
+            claim = payload['claims'][0]
+            for existing in db.execute("SELECT payload FROM items WHERE document_id=? AND version=? AND kind='page'", (run['document_id'], run['version'])):
+                if claim in json.loads(existing['payload']).get('claims', []):
+                    raise Conflict('같은 제목·본문·인용의 주장이 이미 후보로 있어 복구하지 않았습니다.')
+            if db.execute('SELECT 1 FROM recoveries WHERE origin=?', (origin,)).fetchone():
+                raise Conflict('이미 복구한 주장입니다.')
+            item_id = ident()
+            db.execute('INSERT INTO items VALUES(?,?,?,?,?,?,?,?)', (item_id, run['document_id'], run['version'], 'page', canonical(payload), 'pending', 1, run_id))
+            db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)',
+                       (item_id, 1, 'restored', actor, f'제외 주장 복구 · {origin} · {reason}', canonical(payload), now()))
+            db.execute('INSERT INTO recoveries VALUES(?,?,?,?,?,?,?,?)', (origin, run_id, item_id, chunk, path, actor, reason, now()))
+            return {'item_id': item_id, 'origin': origin, 'model_calls': 0}
+
+    def restorations(self, run_id):
+        with self.connect() as db:
+            return [dict(r) for r in db.execute('SELECT r.origin,r.item_id,r.chunk,r.path,r.actor,r.reason,r.created_at,i.status FROM recoveries r LEFT JOIN items i ON i.id=r.item_id WHERE r.run_id=? ORDER BY r.created_at,r.origin', (run_id,))]
+
     @staticmethod
     def refuse_publish_after_document_change(db, run):
         """Inside finish_run's write transaction: a run that needs its document unchanged saves nothing once the current version or the generation differs from the one pinned at its request."""
@@ -1323,6 +1365,7 @@ class Store:
                 else:
                     unlocated += 1
             for version in removed:
+                db.execute('DELETE FROM recoveries WHERE item_id IN (SELECT id FROM items WHERE document_id=? AND version=?)', (document_id, version))
                 db.execute('DELETE FROM events WHERE item_id IN (SELECT id FROM items WHERE document_id=? AND version=?)', (document_id, version))
                 db.execute('DELETE FROM items WHERE document_id=? AND version=?', (document_id, version))
                 db.execute('DELETE FROM versions WHERE document_id=? AND version=?', (document_id, version))
