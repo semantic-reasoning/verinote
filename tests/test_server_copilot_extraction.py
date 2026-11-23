@@ -11,6 +11,7 @@ from test_workflow import SOURCE, approved_dictionary
 
 from verinote.server import Server, main
 from verinote.store import Store
+from verinote.wiki_read import MIN_WIKI_READ_CHARS
 
 
 class CopilotServer(unittest.TestCase):
@@ -67,10 +68,12 @@ class CopilotServer(unittest.TestCase):
         self.assertNotIn('copilot_extraction_concurrency', self.store.settings())
         self.request('/api/settings', 'PUT', body | {'copilot_extraction_concurrency':2})
         self.request('/api/settings', 'PUT', body | {'dictionary_context_bytes':1234})
+        self.request('/api/settings', 'PUT', body | {'wiki_read_chars':MIN_WIKI_READ_CHARS})
         self.request('/api/settings', 'PUT', body | {'copilot_extraction_concurrency':1})
         saved = self.request('/api/settings', 'PUT', body | {'models':{'copilot':'auto'}})
         self.assertEqual(saved['copilot_extraction_concurrency'], 1)
         self.assertEqual(saved['dictionary_context_bytes'], 1234)
+        self.assertEqual(saved['wiki_read_chars'], MIN_WIKI_READ_CHARS)
         reopened = Store(self.store.path)
         self.assertEqual(reopened.settings(), saved)
         restarted = Server(('127.0.0.1', 0), reopened, self.service, copilot_extraction_concurrency=2)

@@ -5,7 +5,8 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from verinote.assistant import MAX_CONTEXT, PROMPT
+from verinote.assistant import MAX_CONTEXT, WIKI_READ_CHARS
+from verinote.assistant import prompt as question_prompt
 from verinote.question_context import PROJECTION_VERSION, PROTOCOL, project, resolve
 from verinote.store import canonical
 
@@ -36,9 +37,9 @@ class ContextTests(unittest.TestCase):
     def test_repeated_valid_results_fit_without_losing_scoped_proofs(self):
         raw = state(); original = copy.deepcopy(raw)
         self.assertTrue(all(len(canonical(e).encode()) < 30000 for e in raw['evidence'].values()))
-        self.assertGreater(len((PROMPT + canonical(raw)).encode()), MAX_CONTEXT)
+        self.assertGreater(len((question_prompt(WIKI_READ_CHARS) + canonical(raw)).encode()), MAX_CONTEXT)
         projected = project(raw)
-        self.assertLess(len((PROTOCOL + PROMPT + canonical(projected.state)).encode()), MAX_CONTEXT)
+        self.assertLess(len((PROTOCOL + question_prompt(WIKI_READ_CHARS) + canonical(projected.state)).encode()), MAX_CONTEXT)
         self.assertEqual(resolve(projected.state), original)
         self.assertEqual(raw, original)
         self.assertEqual(project(raw), projected)

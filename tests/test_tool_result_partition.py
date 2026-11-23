@@ -80,10 +80,11 @@ class ToolResultPartition(unittest.TestCase):
         with self.assertRaises(ValueError): a.validate_answer(answer('graph')['answer'])
 
     def test_fragments_reconstruct_scoped_graph_and_long_unicode_exactly(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state(); original = copy.deepcopy(raw)
-        prepared = plan(raw, PROMPT, 18000)
-        self.assertEqual(prepared, plan(raw, PROMPT, 18000))
+        prepared = plan(raw, question_prompt(WIKI_READ_CHARS), 18000)
+        self.assertEqual(prepared, plan(raw, question_prompt(WIKI_READ_CHARS), 18000))
         fragments = [u for u in prepared.units if u['category'] == 'fragment']
         self.assertEqual(reconstruct(fragments), raw['evidence']['E1'])
         parts = [p for u in fragments for p in u['value']['parts']]
@@ -109,12 +110,13 @@ class ToolResultPartition(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(ValueError): reconstruct(broken)
 
     def test_large_search_trace_is_processed_but_cannot_support_or_authorize(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state(); raw['evidence']['E1']['result']['facts'][0]['payload']['quote'] = '짧은 인용'
         lookup = {'lookup_id': 'K1', 'truncated': False, 'matches': [str(i)+'한글'*100 for i in range(200)]}
         raw['trace'].append({'name': 'search_knowledge', 'status': 'success', 'result': lookup})
         a = self.assistant(raw)
-        output, _ = run(a, raw, PROMPT, 2)
+        output, _ = run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.validate_answer(output['answer']), output['answer'])
         tree = a.job['context_processing'][-1]
         self.assertEqual({u['value']['source_category'] for u in tree['fragments'].values()}, {'trace'})
@@ -128,7 +130,8 @@ class ToolResultPartition(unittest.TestCase):
         with self.assertRaises(ValueError): a.authorize_source('doc', {'lookup_id': 'K1'})
 
     def test_missing_receipt_and_tampered_lineage_or_original_fail(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state()
         for fault in ('missing', 'duplicate', 'citation'):
             def invalid(prompt, selected=fault):
@@ -139,11 +142,11 @@ class ToolResultPartition(unittest.TestCase):
                     else: result['records'][0]['citations'] = ['E999:part:1']
                 return result
             a = self.assistant(raw, invalid)
-            with self.subTest(fault=fault), self.assertRaises(ValueError): run(a, raw, PROMPT, 2)
+            with self.subTest(fault=fault), self.assertRaises(ValueError): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
             self.assertEqual(a.job['context_processing'][-1]['status'], 'failed')
             self.assertFalse(a.delivered_analysis)
         for mutate in ('coverage', 'hash', 'source', 'original'):
-            a = self.assistant(raw); run(a, raw, PROMPT, 2)
+            a = self.assistant(raw); run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
             tree = a.job['context_processing'][-1]; root = tree['root']
             if mutate == 'coverage': a.job['analysis_nodes'][root]['coverage'].pop()
             elif mutate == 'hash': next(iter(tree['fragments'].values()))['sha256'] = '0'*64
@@ -152,11 +155,12 @@ class ToolResultPartition(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(ValueError): supports(a, root)
 
     def test_empty_graph_fragments_cannot_support_claims(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state(); graph = raw['evidence']['E1']['result']
         graph.update(rows=[], row_refs=[], proofs=[])
         a = self.assistant(raw)
-        prepared = plan(raw, PROMPT, 18000)
+        prepared = plan(raw, question_prompt(WIKI_READ_CHARS), 18000)
         unit = next(u for u in prepared.units if u['category'] == 'fragment')
         self.assertFalse(unit['value']['source_usable'])
         invalid = {'records': [{'id': unit['id'], 'text': '빈 그래프', 'citations': [unit['id']], 'unknowns': []}]}
@@ -165,17 +169,19 @@ class ToolResultPartition(unittest.TestCase):
         self.assertFalse(a.delivered_analysis)
 
     def test_tiny_budget_and_partition_cap_fail_before_dispatch(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state(); a = self.assistant(raw, limit=1000)
-        with self.assertRaises(ValueError): run(a, raw, PROMPT, 2)
+        with self.assertRaises(ValueError): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertFalse(a.cli.calls)
         a = self.assistant(raw)
         with patch('verinote.question_batches.MAX_PARTITION_UNITS', 1), self.assertRaisesRegex(ValueError, '기록 수'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertFalse(a.cli.calls)
 
     def test_provider_and_persistence_failure_cannot_complete_partition(self):
-        from verinote.assistant import PROMPT
+        from verinote.assistant import WIKI_READ_CHARS
+        from verinote.assistant import prompt as question_prompt
         raw = large_state()
         calls = []
         def fail(prompt):
@@ -183,7 +189,7 @@ class ToolResultPartition(unittest.TestCase):
             if len(calls) == 2: raise RuntimeError('provider failed')
             return respond(prompt)
         a = self.assistant(raw, fail)
-        with self.assertRaisesRegex(RuntimeError, 'provider failed'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(RuntimeError, 'provider failed'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.job['context_processing'][-1]['status'], 'failed')
         self.assertFalse(a.delivered_analysis)
         self.assertEqual(a.evidence, raw['evidence'])
@@ -191,5 +197,5 @@ class ToolResultPartition(unittest.TestCase):
         a = self.assistant(raw)
         def save_fail(*args): raise OSError('save failed')
         a.progress = save_fail
-        with self.assertRaisesRegex(OSError, 'save failed'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(OSError, 'save failed'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertFalse(a.cli.calls)

@@ -328,13 +328,15 @@ class Store:
                     db.execute('UPDATE questions SET payload=? WHERE id=?', (payload, key))
         return skipped
 
-    def create_question(self, question, agent, model, snapshot, *, execution_options=None):
+    def create_question(self, question, agent, model, snapshot, *, execution_options=None, wiki_read_chars=None):
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
                'snapshot': snapshot, 'status': 'queued', 'trace': [], 'evidence': {},
                'answer': None, 'error': '', 'created_at': now(), 'call_manifest': []}
         if execution_options is not None:
             from .transports import job_options
             job['execution_options'] = job_options(execution_options)
+        if wiki_read_chars is not None:
+            job['wiki_read_chars'] = wiki_read_chars
         with self.connect(True) as db:
             self.require_snapshot(db, snapshot)
             db.execute('INSERT INTO questions VALUES(?,?,?)', (job['id'], canonical(job), job['created_at']))
@@ -570,9 +572,12 @@ class Store:
 
     def save_settings(self, value):
         from .dictionary_context import validate_context_bytes
+        from .wiki_read import validate_wiki_read_chars
         value = dict(value)
         if 'dictionary_context_bytes' in value:
             validate_context_bytes(value['dictionary_context_bytes'])
+        if 'wiki_read_chars' in value:
+            validate_wiki_read_chars(value['wiki_read_chars'])
         if 'copilot_extraction_concurrency' in value:
             concurrency = value['copilot_extraction_concurrency']
             if type(concurrency) is not int or concurrency not in (1, 2):
@@ -584,6 +589,8 @@ class Store:
                 value['dictionary_context_bytes'] = validate_context_bytes(previous['dictionary_context_bytes'])
             if 'copilot_extraction_concurrency' not in value and 'copilot_extraction_concurrency' in previous:
                 value['copilot_extraction_concurrency'] = previous['copilot_extraction_concurrency']
+            if 'wiki_read_chars' not in value and 'wiki_read_chars' in previous:
+                value['wiki_read_chars'] = validate_wiki_read_chars(previous['wiki_read_chars'])
             db.execute("INSERT OR REPLACE INTO settings VALUES('agents',?)", (canonical(value),))
         return value
 

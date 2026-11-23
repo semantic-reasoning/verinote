@@ -459,6 +459,9 @@ async function loadSettings() {
   syncProviderControls('ask');
   modelCatalogEpoch++;
   $('#dictionary-context-bytes').value=config.dictionary.context_bytes;
+  const wikiRead=config.wiki_read,wikiReadInput=$('#wiki-read-chars'),chars=n=>n.toLocaleString('ko-KR');
+  wikiReadInput.min=wikiRead.min;wikiReadInput.max=wikiRead.max;wikiReadInput.value=wikiRead.chars;
+  $('#wiki-read-help').textContent=`자연어 질문에 답할 때 에이전트가 승인 위키를 한 번에 읽는 최대 문자 수입니다. 기본 ${chars(wikiRead.default)}자, ${chars(wikiRead.min)}~${chars(wikiRead.max)}자입니다. 저장한 값은 새로 제출하는 질문부터 적용되며, 이미 제출한 질문(대기·실행 중 포함)은 제출할 때의 값으로 끝까지 읽습니다. 원문 읽기 크기는 바뀌지 않습니다. 값을 키우면 한 회차 입력이 커져 질문 입력 한도나 연결 도구의 한도를 넘을 수 있고, 그때는 분할 분석·종합으로 넘어가 호출 수가 늘어나며, 분할로도 담을 수 없으면 질문이 실패할 수 있습니다.`;
   $('#copilot-extraction-concurrency').value=String(config.copilot_extraction.concurrency);
   $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" id="provider-${p.id}" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><label class="provider-name" for="provider-${p.id}"><strong>${esc(p.name)}</strong><span class="muted">${providerStatus(p)}</span></label><div class="model-fields"><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${['http','local_http'].includes(p.transport)&&config.selected===p.id?'required':''}></label>${cliModelPicker(p)}</div></div>`).join('');
   for(const radio of document.querySelectorAll('[name=selected]')){
@@ -468,7 +471,7 @@ async function loadSettings() {
   await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
-  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value])),dictionary_context_bytes:Number(form.elements.dictionary_context_bytes.value),copilot_extraction_concurrency:Number(form.elements.copilot_extraction_concurrency.value)});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('모델, 사전 표 전환 기준과 청크 병렬 설정을 저장했습니다. 새 작업부터 적용됩니다.');
+  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value])),dictionary_context_bytes:Number(form.elements.dictionary_context_bytes.value),copilot_extraction_concurrency:Number(form.elements.copilot_extraction_concurrency.value),wiki_read_chars:Number(form.elements.wiki_read_chars.value)});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('모델, 사전 표 전환 기준, 위키 읽기 크기와 청크 병렬 설정을 저장했습니다. 새 작업부터 적용됩니다.');
 });};
 $('#query-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const data=Object.fromEntries(new FormData(e.target));if(!data.snapshot)delete data.snapshot;

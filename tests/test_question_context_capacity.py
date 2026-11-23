@@ -11,7 +11,8 @@ from test_assistant import answer, batch, tool
 
 from verinote import engine
 from verinote.agents import CLI
-from verinote.assistant import PROMPT
+from verinote.assistant import WIKI_READ_CHARS
+from verinote.assistant import prompt as question_prompt
 from verinote.ollama import input_byte_limit
 from verinote.question_context import resolve
 from verinote.service import Service
@@ -74,7 +75,7 @@ class RichQuestionCapacity(unittest.TestCase):
                             lookup = result['trace'][2]['result']
                             self.assertFalse(lookup['truncated']); self.assertFalse(lookup['citable'])
                             self.assertIsNone(lookup['next_offset'])
-                        original_bytes = len((PROMPT + canonical(raw_states[-1])).encode())
+                        original_bytes = len((question_prompt(WIKI_READ_CHARS) + canonical(raw_states[-1])).encode())
                         self.assertGreater(original_bytes, limit)
                         measurements = {'documents': count, 'search': search,
                                         'first_prompt_bytes': len(prompts[0].encode()),

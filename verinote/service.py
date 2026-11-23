@@ -49,6 +49,7 @@ from .ontology import (
 from .progress import analysis_progress
 from .store import Conflict, RunCancelled, cancel_result
 from .transports import reasoning_budget, validate_job_tokens
+from .wiki_read import WIKI_READ_CHARS, validate_wiki_read_chars
 
 _UNSET_TOKENS = object()
 
@@ -902,6 +903,7 @@ class Service:
         if not isinstance(agent, str) or agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(request.get('model', config['models'].get(agent, '')), agent)
+        wiki_read_chars = validate_wiki_read_chars(config.get('wiki_read_chars', WIKI_READ_CHARS))
         options, transport = self.register_transport(agent, model, question)
         snapshot_id = request.get('snapshot')
         if snapshot_id is not None and (not isinstance(snapshot_id, str) or len(snapshot_id) != 64):
@@ -911,7 +913,8 @@ class Service:
         job = None
         try:
             snapshot = self.store.snapshot(snapshot_id)
-            job = self.store.create_question(question, agent, model, snapshot['id'], **({'execution_options': options} if options is not None else {}))
+            job = self.store.create_question(question, agent, model, snapshot['id'], wiki_read_chars=wiki_read_chars,
+                                             **({'execution_options': options} if options is not None else {}))
             with self.queue_lock:
                 self.queue.append(('question', job['id']))
                 try:

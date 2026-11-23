@@ -9,7 +9,8 @@ import test_question_synthesis as synthesis
 from test_question_synthesis import scripted, unpack
 from test_split_step_status import SplitStepStatus
 
-from verinote.assistant import PROMPT
+from verinote.assistant import WIKI_READ_CHARS
+from verinote.assistant import prompt as question_prompt
 from verinote.question_synthesis import run
 from verinote.store import RunCancelled, Store
 
@@ -64,7 +65,7 @@ class SplitRoundStatus(unittest.TestCase):
 
     def test_cancel_during_the_first_leaf_call_stores_the_round_cancelled_and_keeps_the_steps(self):
         a, raw = self.begin(self.during(first_leaf, self.cancel))
-        with self.assertRaises(RunCancelled): run(a, raw, PROMPT, 2)
+        with self.assertRaises(RunCancelled): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(self.rounds(self.key), ['running'])
         self.store.finish_question_cancel(self.key, '취소')
         self.assertEqual(self.stored(self.key)['status'], 'cancelled')
@@ -74,7 +75,7 @@ class SplitRoundStatus(unittest.TestCase):
     def test_cancel_committed_at_the_budget_record_save_stores_the_round_cancelled_and_keeps_the_steps_planned(self):
         def cancel(a): self.store.cancel_question(a.job['id'], 'running')
         a, raw = self.begin(scripted, trigger=lambda job: bool(job.get('context_budget')), action=cancel)
-        with self.assertRaises(RunCancelled): run(a, raw, PROMPT, 2)
+        with self.assertRaises(RunCancelled): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         self.store.finish_question_cancel(self.key, '취소')
         self.assertEqual(self.rounds(self.key), ['cancelled'])
@@ -82,7 +83,7 @@ class SplitRoundStatus(unittest.TestCase):
 
     def test_cancel_during_the_decision_call_stores_the_analyzed_round_cancelled(self):
         a, raw = self.begin(self.during(decision, self.cancel))
-        with self.assertRaises(RunCancelled): run(a, raw, PROMPT, 2)
+        with self.assertRaises(RunCancelled): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(self.rounds(self.key), ['analyzed'])
         self.store.finish_question_cancel(self.key, '취소')
         self.assertEqual(self.rounds(self.key), ['cancelled'])
@@ -90,13 +91,13 @@ class SplitRoundStatus(unittest.TestCase):
 
     def test_cancelling_question_keeps_its_running_round_until_the_cancel_is_finished(self):
         a, raw = self.begin(self.during(first_leaf, self.cancel, self.restart))
-        with self.assertRaises(Restart): run(a, raw, PROMPT, 2)
+        with self.assertRaises(Restart): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(self.stored(self.key)['status'], 'cancelling')
         self.assertEqual(self.rounds(self.key), ['running'])
 
     def test_restart_during_a_leaf_call_then_recover_stores_the_round_interrupted_and_keeps_the_steps(self):
         a, raw = self.begin(self.during(first_leaf, self.restart))
-        with self.assertRaises(Restart): run(a, raw, PROMPT, 2)
+        with self.assertRaises(Restart): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(self.rounds(self.key), ['running'])
         Store(self.store.path).recover()
         self.assertEqual(self.stored(self.key)['status'], 'interrupted')
@@ -105,14 +106,14 @@ class SplitRoundStatus(unittest.TestCase):
 
     def test_restart_while_cancelling_then_recover_stores_the_round_cancelled(self):
         a, raw = self.begin(self.during(first_leaf, self.cancel, self.restart))
-        with self.assertRaises(Restart): run(a, raw, PROMPT, 2)
+        with self.assertRaises(Restart): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         Store(self.store.path).recover()
         self.assertEqual(self.stored(self.key)['status'], 'cancelled')
         self.assertEqual(self.rounds(self.key), ['cancelled'])
 
     def test_recover_rewrites_only_rows_whose_open_round_it_ends_counted_by_an_update_trigger(self):
         a, raw = self.begin(self.during(first_leaf, self.restart))
-        with self.assertRaises(Restart): run(a, raw, PROMPT, 2)
+        with self.assertRaises(Restart): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         legacy = self.stored(self.key) | {'status': 'cancelled', 'error': '이전 버전'}
         ended = self.store.create_question('끝난 질문', 'claude', 'sonnet', self.store.snapshot()['id'])
         ended |= {'status': 'error', 'error': '실패', 'context_processing': [{'round': 1, 'status': 'failed', 'nodes': []}]}
@@ -133,7 +134,7 @@ class SplitRoundStatus(unittest.TestCase):
     def test_failure_of_the_first_tree_save_then_error_save_stores_the_round_failed(self):
         def fail(a): raise RuntimeError('save failed')
         a, raw = self.begin(scripted, trigger=lambda job: bool(job.get('context_processing')), action=fail)
-        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.job['context_processing'][0]['status'], 'running')
         self.store.save_question(a.job | {'status': 'error', 'error': 'save failed'})
         self.assertEqual(self.rounds(self.key), ['failed'])
@@ -141,7 +142,7 @@ class SplitRoundStatus(unittest.TestCase):
 
     def test_end_unstored_question_stores_a_running_round_failed(self):
         a, raw = self.begin(self.during(first_leaf, self.restart))
-        with self.assertRaises(Restart): run(a, raw, PROMPT, 2)
+        with self.assertRaises(Restart): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertTrue(self.store.end_unstored_question(self.key, '실패'))
         self.assertEqual(self.rounds(self.key), ['failed'])
         self.assertEqual(self.steps(self.key), ['dispatched', 'planned', 'planned'])

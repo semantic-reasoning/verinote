@@ -8,7 +8,7 @@ import test_workflow as workflow
 from test_workflow import SOURCE
 
 from verinote import engine
-from verinote.assistant import Assistant
+from verinote.assistant import WIKI_READ_CHARS, Assistant
 from verinote.service import Service
 from verinote.store import Store
 
@@ -409,14 +409,15 @@ class WikiQuestionTests(unittest.TestCase):
             state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
             self.assertTrue(state['answer_only'])
             self.assertEqual((state['round'], state['exploration_rounds_remaining']), (6, 0))
-            self.assertEqual(state['evidence']['E3']['offset'], 8000)
+            self.assertEqual(state['evidence']['E3']['offset'], WIKI_READ_CHARS)
             self.assertIsNone(state['evidence']['E3']['next_offset'])
             return answer(kind='wiki', ids=['E3'])
         outputs = [tool(), self.lookup(), tool(name='read_wiki',page_id=page['id']), tool(),
-                   tool(name='read_wiki',page_id=page['id'],offset=8000), final]
+                   tool(name='read_wiki',page_id=page['id'],offset=WIKI_READ_CHARS), final]
         with patch.object(self.store,'source_text',side_effect=AssertionError('raw body read')):
             job, fake = self.ask(outputs)
         self.assertEqual(job['status'], 'success', job['error'])
+        self.assertTrue(WIKI_READ_CHARS < job['evidence']['E3']['total_chars'] <= 2 * WIKI_READ_CHARS)  # two reads end the page
         self.assertEqual((len(fake.calls), len(job['trace'])), (6, 5))
         for index, (_, _, prompt) in enumerate(fake.calls[:5]):
             state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
@@ -602,11 +603,12 @@ class WikiQuestionTests(unittest.TestCase):
         page=self.wiki(claims=[{'heading':'구조','text':'설명'*700,'quote':SOURCE} for _ in range(8)])
         def next_part(prompt):
             state=json.loads(prompt.split('입력 상태(JSON):\n',1)[1]);e=state['evidence']['E2']
-            self.assertTrue(e['partial']);self.assertEqual(e['next_offset'],8000)
+            self.assertTrue(e['partial']);self.assertEqual(e['next_offset'],WIKI_READ_CHARS)
             return tool(name='read_wiki',page_id=page['id'],offset=e['next_offset'])
         job,_=self.ask([batch(tool(),self.lookup()),tool(name='read_wiki',page_id=page['id']),next_part,answer(kind='wiki',ids=['E3'])])
         self.assertEqual(job['status'],'success',job['error'])
-        self.assertEqual(job['evidence']['E3']['offset'],8000)
+        self.assertEqual(job['evidence']['E3']['offset'],WIKI_READ_CHARS)
+        self.assertTrue(WIKI_READ_CHARS < job['evidence']['E3']['total_chars'] <= 2 * WIKI_READ_CHARS)  # two reads end the page
         self.assertIsNone(job['evidence']['E3']['next_offset'])
         for kind,ids in [('source',['E2']),('graph',['E2']),('wiki',['E1'])]:
             job,_=self.ask([batch(tool(),self.lookup()),tool(name='read_wiki',page_id=page['id']),answer(kind=kind,ids=ids)])

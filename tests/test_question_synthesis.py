@@ -9,7 +9,8 @@ from unittest.mock import patch
 from test_assistant import answer, tool
 from test_question_budget import LimitedFake
 
-from verinote.assistant import PROMPT, Assistant
+from verinote.assistant import WIKI_READ_CHARS, Assistant
+from verinote.assistant import prompt as question_prompt
 from verinote.question_batches import MARKER, leaf_prompt, plan, units_for
 from verinote.question_context import resolve
 from verinote.question_synthesis import (
@@ -72,7 +73,7 @@ class CompleteContext(unittest.TestCase):
 
     def test_exhaustive_partition_preserves_exact_records_and_original_question(self):
         raw = state(); before = copy.deepcopy(raw)
-        prepared = plan(raw, PROMPT, 18000)
+        prepared = plan(raw, question_prompt(WIKI_READ_CHARS), 18000)
         self.assertGreater(len(prepared.batches), 1)
         seen = []
         for batch in prepared.batches:
@@ -85,11 +86,11 @@ class CompleteContext(unittest.TestCase):
             seen.extend(decoded['assigned_ids'])
         self.assertEqual(seen, [u['id'] for u in prepared.units])
         self.assertEqual(raw, before)
-        self.assertEqual(plan(raw, PROMPT, 18000), prepared)
+        self.assertEqual(plan(raw, question_prompt(WIKI_READ_CHARS), 18000), prepared)
 
     def test_all_records_and_early_clue_reach_root_with_more_than_six_calls(self):
         raw = state(); a = self.assistant(raw, limit=14000)
-        output, _ = run(a, raw, PROMPT, 2)
+        output, _ = run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         tree = a.job['context_processing'][0]
         self.assertEqual(tree['status'], 'complete')
         self.assertEqual(tree['processed_records'], tree['planned_records'])
@@ -122,7 +123,7 @@ class CompleteContext(unittest.TestCase):
                     return result
                 raw = state(); a = self.assistant(raw, bad)
                 with self.assertRaisesRegex(ValueError, '처리 범위'):
-                    run(a, raw, PROMPT, 2)
+                    run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
                 self.assertEqual(a.job['context_processing'][0]['status'], 'failed')
                 self.assertEqual(a.job['call_manifest'][len(a.cli.calls)-1]['status'], 'failed')
                 self.assertFalse(a.delivered_analysis)
@@ -135,12 +136,12 @@ class CompleteContext(unittest.TestCase):
             return output
         raw = state(); a = self.assistant(raw, oversized)
         with self.assertRaisesRegex(ValueError, '예산'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(len(a.cli.calls), 1)
         raw['question'] = ''.join(chr(0x4e00+i) for i in range(10000))
         a = self.assistant(raw)
         with self.assertRaisesRegex(ValueError, '입력 예산'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
 
     def crowded_state(self):
@@ -158,10 +159,10 @@ class CompleteContext(unittest.TestCase):
 
     def test_303_records_finish_after_lossless_local_response_partition_without_repeated_calls(self):
         raw = self.crowded_state(); before = copy.deepcopy(raw)
-        prepared = plan(raw, PROMPT, 60000)
+        prepared = plan(raw, question_prompt(WIKI_READ_CHARS), 60000)
         self.assertLess(max(map(len, prepared.batches)), 246)
         a = self.assistant(raw, self.verbose_leaf, limit=60000)
-        output, _ = run(a, raw, PROMPT, 2)
+        output, _ = run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         tree = a.job['context_processing'][0]
         self.assertEqual(tree['processed_records'], 303)
         self.assertEqual(tree['status'], 'complete')
@@ -201,13 +202,13 @@ class CompleteContext(unittest.TestCase):
                 else: output['records'][0]['text'] = 'x' * MAX_LEAF_RESPONSE_BYTES
                 return output
             a = self.assistant(self.crowded_state(), bad, limit=60000)
-            with self.subTest(defect=defect), self.assertRaises(ValueError): run(a, self.crowded_state(), PROMPT, 2)
+            with self.subTest(defect=defect), self.assertRaises(ValueError): run(a, self.crowded_state(), question_prompt(WIKI_READ_CHARS), 2)
             self.assertEqual(len(a.cli.calls), 1); self.assertFalse(a.job['analysis_nodes'])
             self.assertFalse(a.delivered_analysis)
 
     def test_partition_ancestry_rejects_content_membership_hash_and_sibling_authority_tampering(self):
         raw = self.crowded_state(); a = self.assistant(raw, self.verbose_leaf, limit=60000)
-        run(a, raw, PROMPT, 2); original = copy.deepcopy(a.job)
+        run(a, raw, question_prompt(WIKI_READ_CHARS), 2); original = copy.deepcopy(a.job)
         for defect in ('text', 'duplicate', 'omit', 'hash', 'source', 'authority'):
             a.job = copy.deepcopy(original); tree = a.job['context_processing'][0]
             source_id, parts = next((k,v) for k,v in tree['leaf_partitions'].items() if len(v)>1)
@@ -223,21 +224,21 @@ class CompleteContext(unittest.TestCase):
 
     def test_persisted_local_partitions_cache_only_with_same_allowance(self):
         raw = self.crowded_state(); first = self.assistant(raw, self.verbose_leaf, limit=60000)
-        run(first, raw, PROMPT, 2)
+        run(first, raw, question_prompt(WIKI_READ_CHARS), 2)
         for limit in (60000, 50000):
             a = self.assistant(raw, self.verbose_leaf, limit=limit)
             a.job['analysis_nodes'] = copy.deepcopy(first.job['analysis_nodes'])
             a.job['analysis_leaf_responses'] = copy.deepcopy(first.job['analysis_leaf_responses'])
-            output, _ = run(a, raw, PROMPT, 2)
+            output, _ = run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
             self.assertEqual(a.validate_answer(output['answer']), output['answer'])
             self.assertEqual(len(a.cli.calls)==1, limit==60000)
 
     def test_worst_case_call_reservation_prevents_any_dispatch(self):
         raw = self.crowded_state(); a = self.assistant(raw, self.verbose_leaf, limit=60000)
-        prepared = plan(raw, PROMPT, 60000)
+        prepared = plan(raw, question_prompt(WIKI_READ_CHARS), 60000)
         a.job['physical_call_bound'] = len(prepared.batches) + len(prepared.units) - 1
         with self.assertRaisesRegex(ValueError, '호출 상한'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         self.assertFalse(a.job.get('call_manifest'))
 
@@ -247,7 +248,7 @@ class CompleteContext(unittest.TestCase):
             def stop(*args, a=a, error=error):
                 if any(c['stage']=='analysis_merge' for c in a.job.get('call_manifest', [])): raise error
             a.progress = stop
-            with self.subTest(error=error), self.assertRaises(type(error)): run(a, raw, PROMPT, 2)
+            with self.subTest(error=error), self.assertRaises(type(error)): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
             self.assertTrue(all('assigned_ids' in unpack(c[2]) for c in a.cli.calls))
             self.assertEqual(a.job['call_manifest'][-1]['status'], 'planned')
 
@@ -262,12 +263,12 @@ class CompleteContext(unittest.TestCase):
             if 'children' in result: result['text'] = 'x'*20000
             return result
         a = self.assistant(raw, bad_merge)
-        with self.assertRaisesRegex(ValueError, '예산'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(ValueError, '예산'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertFalse(a.delivered_analysis)
 
     def test_legacy_completed_tree_remains_strictly_readable(self):
         raw = state(); a = self.assistant(raw)
-        run(a, raw, PROMPT, 2); tree = a.job['context_processing'][0]
+        run(a, raw, question_prompt(WIKI_READ_CHARS), 2); tree = a.job['context_processing'][0]
         expected = supports(a, tree['root'])
         for field in ('synthesis_version', 'leaf_partitions', 'bounded_leaves'): tree.pop(field)
         a.job.pop('analysis_leaf_responses')
@@ -285,7 +286,7 @@ class CompleteContext(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '인용'):
                     validate(response, {'stage': 'analysis_leaf', 'units': [unit]}, 1000, {})
         raw = state(); a = self.assistant(raw)
-        run(a, raw, PROMPT, 2)
+        run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         with self.assertRaises(ValueError):
             a.authorize_source('doc', {'lookup_id': 'K1', 'reason': 'no_approved_wiki', 'detail': '부족', 'wiki_evidence_ids': []})
 
@@ -294,7 +295,7 @@ class CompleteContext(unittest.TestCase):
         def fail(*args): raise OSError('save failed')
         a.progress = fail
         with self.assertRaisesRegex(OSError, 'save failed'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         owner = {'id': 'a'*32, 'agent': 'claude', 'status': 'error', 'model': 'sonnet', 'call_manifest': [
             {'path': 'context-1-1', 'stage': 'analysis_leaf', 'status': 'failed'},
@@ -342,7 +343,7 @@ class CompleteContext(unittest.TestCase):
         a = self.assistant(raw, fail)
         a.delivered_evidence = {'previous'}; a.delivered_lookups = {'Kprevious'}
         with self.assertRaisesRegex(RuntimeError, 'provider failed'):
-            run(a, raw, PROMPT, 2)
+            run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.delivered_evidence, {'previous'})
         self.assertEqual(a.delivered_lookups, {'Kprevious'})
         self.assertEqual(a.delivered_analysis, set())

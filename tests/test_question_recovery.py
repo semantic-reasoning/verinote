@@ -8,8 +8,10 @@ import test_assistant as assistant_tests
 import test_workflow as workflow
 from test_assistant import Fake, answer, batch, tool
 
-from verinote.assistant import PROMPT, Assistant
+from verinote.assistant import Assistant
+from verinote.assistant import prompt as question_prompt
 from verinote.question_context import resolve
+from verinote.wiki_read import MAX_WIKI_READ_CHARS
 
 
 def input_state(prompt):
@@ -26,7 +28,8 @@ class QuestionRecovery(unittest.TestCase):
     def test_static_prompt_preserves_pre_recovery_input_capacity(self):
         # Original instructions used 9,014 UTF-8 bytes. Correction guidance must
         # not consume ordinary-request capacity on small local model contexts.
-        self.assertLessEqual(len(PROMPT.encode('utf-8')), 9014)
+        # The read_wiki sentence states the job's read size, so measure the longest one a job can carry.
+        self.assertLessEqual(len(question_prompt(MAX_WIKI_READ_CHARS).encode('utf-8')), 9014)
 
     def test_empty_graph_claim_is_corrected_without_changing_evidence(self):
         self.approve(self.extract())
