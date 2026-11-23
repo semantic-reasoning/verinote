@@ -142,8 +142,8 @@ class Deletion(unittest.TestCase):
                 service=Service(store,self.root/operation)
                 ready,release=threading.Event(),threading.Event()
                 method=store.create_question if operation=='question' else store.save_query
-                def delayed(*args):
-                    ready.set();release.wait(5);return method(*args)  # noqa: B023 (intentional: same-iteration ready/release/method)
+                def delayed(*args, **kwargs):
+                    ready.set();release.wait(5);return method(*args, **kwargs)  # noqa: B023 (intentional: same-iteration ready/release/method)
                 with patch.object(store,'create_question' if operation=='question' else 'save_query',side_effect=delayed):
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future=pool.submit(service.ask,{'question':'q'}) if operation=='question' else pool.submit(service.query,{})

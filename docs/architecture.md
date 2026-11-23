@@ -67,7 +67,7 @@ POSIX 읽기는 `O_NOFOLLOW | O_NONBLOCK`로 파일을 열고 같은 디스크�
 
 ## 자연어 질문
 
-`assistant.py`는 `query_graph`, `search_knowledge`, `read_wiki`, `search_documents`, `read_document`만 허용한다. 실제 graph 실행 없이 최종 답변할 수 없다. graph/wiki/source/inference와 실제 증거 ID를 대조하며 빈 graph는 긍정 근거가 아니다. 승인 사전 검색은 문서별 어휘 안내이고 인용 근거가 아니다. `read_wiki`는 고정 페이지의 주장과 원문 인용을 렌더링한 문자열을 2,000자씩 제공하며 page_id/revision/version/sha256, claim_indices, offset/end_offset/next_offset/partial을 기록한다.
+`assistant.py`는 `query_graph`, `search_knowledge`, `read_wiki`, `search_documents`, `read_document`만 허용한다. 실제 graph 실행 없이 최종 답변할 수 없다. graph/wiki/source/inference와 실제 증거 ID를 대조하며 빈 graph는 긍정 근거가 아니다. 승인 사전 검색은 문서별 어휘 안내이고 인용 근거가 아니다. `read_wiki`는 고정 페이지의 주장과 원문 인용을 렌더링한 문자열을 질문 제출 시 `agents` 설정에서 job에 고정한 `wiki_read_chars`자씩(키가 없는 job은 8,000자) 제공하고 질문 지시문의 `read_wiki` 안내도 같은 값을 말하며 page_id/revision/version/sha256, claim_indices, offset/end_offset/next_offset/partial을 기록한다.
 
 Assistant 초기화는 고정 메타데이터만 사용한다. 과거 스냅샷에 메타데이터가 없을 때도 Store.document_metadata가 버전별 컬럼만 조회하며 원문이나 현재 승인 항목을 읽지 않는다. 원문은 authorize_source를 통과한 뒤 source_text로 지연 로딩한다. search_documents 기본 mode=metadata는 제목·파일명만 검색하며 mode=body는 document_id와 fallback이 필수다.
 

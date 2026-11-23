@@ -47,6 +47,12 @@ from .transports import (
     MIN_JOB_TOKENS,
     ExecutionOptions,
 )
+from .wiki_read import (
+    MAX_WIKI_READ_CHARS,
+    MIN_WIKI_READ_CHARS,
+    WIKI_READ_CHARS,
+    validate_wiki_read_chars,
+)
 
 MAX_JSON_BYTES = 6 * 1024 * 1024
 MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
@@ -169,13 +175,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(settings | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold, 'context_bytes': settings.get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES), 'context_min': 1, 'context_max': MAX_PROMPT_BYTES}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
                                      'extraction_policy': {'policy': self.server.claude_extraction_policy, 'agent': 'claude', 'stage': 'extract', 'source': 'server_startup'},
                                      'copilot_extraction': self.server.copilot_extraction_settings(settings),
+                                     'wiki_read': {'chars': settings.get('wiki_read_chars', WIKI_READ_CHARS), 'min': MIN_WIKI_READ_CHARS,
+                                                   'max': MAX_WIKI_READ_CHARS, 'default': WIKI_READ_CHARS},
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
                                                               'default_reserve': DEFAULT_ANSWER_TOKENS,
                                                               'max_reasoning': MAX_REASONING_TOKENS}})
                 if method == 'PUT':
                     data = self.body()
-                    if not isinstance(data, dict) or not {'selected', 'models'} <= set(data) or set(data) - {'selected', 'models', 'dictionary_context_bytes', 'copilot_extraction_concurrency'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
+                    if not isinstance(data, dict) or not {'selected', 'models'} <= set(data) or set(data) - {'selected', 'models', 'dictionary_context_bytes', 'copilot_extraction_concurrency', 'wiki_read_chars'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
                     models = {key: validate_model(value) for key, value in data['models'].items()}
                     if data['selected'] in ('openrouter', 'ollama'):
@@ -184,6 +192,8 @@ class Handler(BaseHTTPRequestHandler):
                     extra = {'dictionary_context_bytes': validate_context_bytes(data['dictionary_context_bytes'])} if 'dictionary_context_bytes' in data else {}
                     if 'copilot_extraction_concurrency' in data:
                         extra['copilot_extraction_concurrency'] = data['copilot_extraction_concurrency']
+                    if 'wiki_read_chars' in data:
+                        extra['wiki_read_chars'] = validate_wiki_read_chars(data['wiki_read_chars'])
                     return self.send(store.save_settings({'selected': data['selected'], 'models': models, **extra}))
             if route.path == '/api/usage-rates':
                 if method == 'GET':

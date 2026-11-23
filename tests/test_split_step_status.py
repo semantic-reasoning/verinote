@@ -6,7 +6,8 @@ import unittest
 import test_question_synthesis as synthesis
 from test_question_synthesis import scripted, state
 
-from verinote.assistant import PROMPT
+from verinote.assistant import WIKI_READ_CHARS
+from verinote.assistant import prompt as question_prompt
 from verinote.question_synthesis import run
 from verinote.store import RunCancelled
 
@@ -57,7 +58,7 @@ class SplitStepStatus(unittest.TestCase):
     def test_failed_budget_record_save_leaves_the_step_planned_like_its_manifest_record(self):
         def fail(a): raise RuntimeError('save failed')
         a, raw = self.start(trigger=budget_saved, action=fail)
-        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         stored = self.stored(a.job['id'])
         self.assertEqual(stored['context_processing'][0]['status'], 'failed')
@@ -67,7 +68,7 @@ class SplitStepStatus(unittest.TestCase):
     def test_failed_dispatched_record_save_leaves_the_step_planned_like_its_manifest_record(self):
         def fail(a): raise RuntimeError('save failed')
         a, raw = self.start(trigger=dispatched_saved, action=fail)
-        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, PROMPT, 2)
+        with self.assertRaisesRegex(RuntimeError, 'save failed'): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         stored = self.stored(a.job['id'])
         self.assertEqual(stored['context_processing'][0]['status'], 'failed')
@@ -82,7 +83,7 @@ class SplitStepStatus(unittest.TestCase):
         for response, error in ((raises, 'provider failed'), (missing_receipt, '처리 범위')):
             with self.subTest(error=error):
                 a, raw = self.start(response)
-                with self.assertRaisesRegex(Exception, error): run(a, raw, PROMPT, 2)
+                with self.assertRaisesRegex(Exception, error): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
                 self.assertEqual(len(a.cli.calls), 1)
                 self.assertEqual(self.pairs(self.stored(a.job['id']))[0][1:], ('failed', 'failed'))
                 self.assertEachRecordedProgressSaveAgrees()
@@ -90,7 +91,7 @@ class SplitStepStatus(unittest.TestCase):
     def test_cancel_committed_before_the_dispatched_save_stores_the_step_planned_like_its_manifest_record(self):
         def cancel(a): self.store.cancel_question(a.job['id'], 'running')
         a, raw = self.start(trigger=dispatched_saved, action=cancel)
-        with self.assertRaises(RunCancelled): run(a, raw, PROMPT, 2)
+        with self.assertRaises(RunCancelled): run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         self.assertEqual(a.cli.calls, [])
         stored = self.stored(a.job['id'])
         self.assertEqual(stored['status'], 'cancelling')
@@ -99,7 +100,7 @@ class SplitStepStatus(unittest.TestCase):
 
     def test_each_progress_save_of_a_successful_split_run_stores_each_leaf_and_merge_step_like_its_manifest_record(self):
         a, raw = self.start()
-        run(a, raw, PROMPT, 2)
+        run(a, raw, question_prompt(WIKI_READ_CHARS), 2)
         stages = {n['stage'] for n in self.stored(a.job['id'])['context_processing'][0]['nodes']}
         self.assertEqual(stages, {'analysis_leaf', 'analysis_merge'})
         self.assertTrue(all(node == 'complete' for _, node, _ in self.saves[-1]))
